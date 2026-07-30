@@ -99,6 +99,37 @@ describe("runAppUpdateCheck", () => {
     expect(states).toEqual(["checking", "idle"]);
     reportError.mockRestore();
   });
+
+  it("coalesces overlapping launch and manual checks", async () => {
+    let resolveCheck!: (result: {
+      readonly isAvailable: boolean;
+      readonly isRollBackToEmbedded: boolean;
+    }) => void;
+    const checkResult = new Promise<{
+      readonly isAvailable: boolean;
+      readonly isRollBackToEmbedded: boolean;
+    }>((resolve) => {
+      resolveCheck = resolve;
+    });
+    const client = makeUpdateClient({
+      checkForUpdateAsync: vi.fn(() => checkResult),
+    });
+    const checkOnLaunch = createAppUpdateLaunchCheck(client);
+
+    const launchCheck = checkOnLaunch();
+    const manualCheck = runAppUpdateCheck({ client });
+
+    expect(client.checkForUpdateAsync).toHaveBeenCalledOnce();
+
+    resolveCheck({
+      isAvailable: false,
+      isRollBackToEmbedded: false,
+    });
+    await Promise.all([launchCheck, manualCheck]);
+
+    await runAppUpdateCheck({ client });
+    expect(client.checkForUpdateAsync).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe("createAppUpdateLaunchCheck", () => {

@@ -30,6 +30,7 @@ interface AppUpdateCheckOptions {
 }
 
 const HIDDEN_UPDATE_TAP_COUNT = 5;
+let appUpdateCheckInFlight: Promise<void> | undefined;
 
 /**
  * Keeps the manual update affordance discoverable only to someone deliberately
@@ -56,6 +57,26 @@ export async function runAppUpdateCheck(options: AppUpdateCheckOptions = {}): Pr
   const client = options.client ?? Updates;
   if (!client.isEnabled) return;
 
+  if (appUpdateCheckInFlight) {
+    await appUpdateCheckInFlight;
+    return;
+  }
+
+  const check = performAppUpdateCheck(client, options);
+  appUpdateCheckInFlight = check;
+  try {
+    await check;
+  } finally {
+    if (appUpdateCheckInFlight === check) {
+      appUpdateCheckInFlight = undefined;
+    }
+  }
+}
+
+async function performAppUpdateCheck(
+  client: AppUpdateClient,
+  options: AppUpdateCheckOptions,
+): Promise<void> {
   const setState = options.onStateChange ?? (() => {});
 
   setState("checking");
