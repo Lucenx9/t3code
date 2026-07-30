@@ -115,11 +115,16 @@ describe("runAppUpdateCheck", () => {
       checkForUpdateAsync: vi.fn(() => checkResult),
     });
     const checkOnLaunch = createAppUpdateLaunchCheck(client);
+    const manualStates: AppUpdateCheckState[] = [];
 
     const launchCheck = checkOnLaunch();
-    const manualCheck = runAppUpdateCheck({ client });
+    const manualCheck = runAppUpdateCheck({
+      client,
+      onStateChange: (state) => manualStates.push(state),
+    });
 
     expect(client.checkForUpdateAsync).toHaveBeenCalledOnce();
+    expect(manualStates).toEqual(["checking"]);
 
     resolveCheck({
       isAvailable: false,
@@ -127,8 +132,42 @@ describe("runAppUpdateCheck", () => {
     });
     await Promise.all([launchCheck, manualCheck]);
 
+    expect(manualStates).toEqual(["checking", "current"]);
+
     await runAppUpdateCheck({ client });
     expect(client.checkForUpdateAsync).toHaveBeenCalledTimes(2);
+  });
+
+  it("forwards failures to a manual check coalesced with the launch check", async () => {
+    const reportError = vi.spyOn(console, "error").mockImplementation(() => {});
+    let rejectCheck!: (error: Error) => void;
+    const checkResult = new Promise<{
+      readonly isAvailable: boolean;
+      readonly isRollBackToEmbedded: boolean;
+    }>((_resolve, reject) => {
+      rejectCheck = reject;
+    });
+    const client = makeUpdateClient({
+      checkForUpdateAsync: vi.fn(() => checkResult),
+    });
+    const checkOnLaunch = createAppUpdateLaunchCheck(client);
+    const failures: string[] = [];
+    const manualStates: AppUpdateCheckState[] = [];
+
+    const launchCheck = checkOnLaunch();
+    const manualCheck = runAppUpdateCheck({
+      client,
+      onFailure: (message) => failures.push(message),
+      onStateChange: (state) => manualStates.push(state),
+    });
+
+    rejectCheck(new Error("offline"));
+    await Promise.all([launchCheck, manualCheck]);
+
+    expect(client.checkForUpdateAsync).toHaveBeenCalledOnce();
+    expect(failures).toEqual(["offline"]);
+    expect(manualStates).toEqual(["checking", "idle"]);
+    reportError.mockRestore();
   });
 });
 

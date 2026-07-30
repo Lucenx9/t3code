@@ -29,8 +29,20 @@ interface AppUpdateCheckOptions {
   readonly onStateChange?: (state: AppUpdateCheckState) => void;
 }
 
+interface AppUpdateCheckProgress {
+  failure: string | undefined;
+  state: AppUpdateCheckState | undefined;
+}
+
+interface AppUpdateCheckInFlight {
+  readonly failureListeners: Set<NonNullable<AppUpdateCheckOptions["onFailure"]>>;
+  readonly progress: AppUpdateCheckProgress;
+  readonly promise: Promise<void>;
+  readonly stateListeners: Set<NonNullable<AppUpdateCheckOptions["onStateChange"]>>;
+}
+
 const HIDDEN_UPDATE_TAP_COUNT = 5;
-let appUpdateCheckInFlight: Promise<void> | undefined;
+let appUpdateCheckInFlight: AppUpdateCheckInFlight | undefined;
 
 /**
  * Keeps the manual update affordance discoverable only to someone deliberately
@@ -58,18 +70,66 @@ export async function runAppUpdateCheck(options: AppUpdateCheckOptions = {}): Pr
   if (!client.isEnabled) return;
 
   if (appUpdateCheckInFlight) {
-    await appUpdateCheckInFlight;
+    await observeAppUpdateCheck(appUpdateCheckInFlight, options);
     return;
   }
 
-  const check = performAppUpdateCheck(client, options);
-  appUpdateCheckInFlight = check;
+  const progress: AppUpdateCheckProgress = {
+    failure: undefined,
+    state: undefined,
+  };
+  const failureListeners = new Set<NonNullable<AppUpdateCheckOptions["onFailure"]>>();
+  const stateListeners = new Set<NonNullable<AppUpdateCheckOptions["onStateChange"]>>();
+  if (options.onFailure) failureListeners.add(options.onFailure);
+  if (options.onStateChange) stateListeners.add(options.onStateChange);
+
+  const promise = performAppUpdateCheck(client, {
+    onFailure: (message) => {
+      progress.failure = message;
+      for (const listener of failureListeners) listener(message);
+    },
+    onStateChange: (state) => {
+      progress.state = state;
+      for (const listener of stateListeners) listener(state);
+    },
+  });
+  const inFlight: AppUpdateCheckInFlight = {
+    failureListeners,
+    progress,
+    promise,
+    stateListeners,
+  };
+  appUpdateCheckInFlight = inFlight;
   try {
-    await check;
+    await promise;
   } finally {
-    if (appUpdateCheckInFlight === check) {
+    if (appUpdateCheckInFlight === inFlight) {
       appUpdateCheckInFlight = undefined;
     }
+  }
+}
+
+async function observeAppUpdateCheck(
+  inFlight: AppUpdateCheckInFlight,
+  options: AppUpdateCheckOptions,
+): Promise<void> {
+  const onFailure = options.onFailure;
+  const onStateChange = options.onStateChange;
+
+  if (onFailure) {
+    inFlight.failureListeners.add(onFailure);
+    if (inFlight.progress.failure) onFailure(inFlight.progress.failure);
+  }
+  if (onStateChange) {
+    inFlight.stateListeners.add(onStateChange);
+    if (inFlight.progress.state) onStateChange(inFlight.progress.state);
+  }
+
+  try {
+    await inFlight.promise;
+  } finally {
+    if (onFailure) inFlight.failureListeners.delete(onFailure);
+    if (onStateChange) inFlight.stateListeners.delete(onStateChange);
   }
 }
 
