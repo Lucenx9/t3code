@@ -1471,6 +1471,40 @@ function ChatViewContent(props: ChatViewProps) {
   const isLocalDraftThread = !isServerThread && localDraftThread !== undefined;
   const canCheckoutPullRequestIntoThread = isLocalDraftThread;
   const activeThreadId = activeThread?.id ?? null;
+  const serverModeThreadId = activeThreadId ?? (routeKind === "server" ? threadId : null);
+
+  useLayoutEffect(() => {
+    if (routeKind !== "server") return;
+    setComposerDraftRuntimeMode(composerDraftTarget, null);
+    setComposerDraftInteractionMode(composerDraftTarget, null);
+  }, [
+    composerDraftTarget,
+    routeKind,
+    routeThreadKey,
+    setComposerDraftInteractionMode,
+    setComposerDraftRuntimeMode,
+  ]);
+
+  useEffect(() => {
+    if (!activeServerThread) return;
+    if (composerRuntimeMode !== null && composerRuntimeMode === activeServerThread.runtimeMode) {
+      setComposerDraftRuntimeMode(composerDraftTarget, null);
+    }
+    if (
+      composerInteractionMode !== null &&
+      composerInteractionMode === activeServerThread.interactionMode
+    ) {
+      setComposerDraftInteractionMode(composerDraftTarget, null);
+    }
+  }, [
+    activeServerThread,
+    composerDraftTarget,
+    composerInteractionMode,
+    composerRuntimeMode,
+    setComposerDraftInteractionMode,
+    setComposerDraftRuntimeMode,
+  ]);
+
   const runningTerminalIds = useThreadRunningTerminalIds({
     environmentId: activeThread?.environmentId ?? null,
     threadId: activeThreadId,
@@ -3087,16 +3121,40 @@ function ChatViewContent(props: ChatViewProps) {
       setComposerDraftRuntimeMode(composerDraftTarget, mode);
       if (isLocalDraftThread) {
         setDraftThreadContext(composerDraftTarget, { runtimeMode: mode });
+      } else if (serverModeThreadId) {
+        void setThreadRuntimeMode({
+          environmentId,
+          input: { threadId: serverModeThreadId, runtimeMode: mode },
+        }).then((result) => {
+          if (result._tag !== "Failure") return;
+          if (
+            useComposerDraftStore.getState().getComposerDraft(composerDraftTarget)?.runtimeMode ===
+            mode
+          ) {
+            setComposerDraftRuntimeMode(composerDraftTarget, null);
+          }
+          if (isAtomCommandInterrupted(result)) return;
+          toastManager.add(
+            stackedThreadToast({
+              type: "error",
+              title: "Could not change access mode",
+              description: chatActionErrorMessage(squashAtomCommandFailure(result)),
+            }),
+          );
+        });
       }
       scheduleComposerFocus();
     },
     [
+      composerDraftTarget,
+      environmentId,
       isLocalDraftThread,
       runtimeMode,
       scheduleComposerFocus,
-      composerDraftTarget,
+      serverModeThreadId,
       setComposerDraftRuntimeMode,
       setDraftThreadContext,
+      setThreadRuntimeMode,
     ],
   );
 
@@ -3106,16 +3164,40 @@ function ChatViewContent(props: ChatViewProps) {
       setComposerDraftInteractionMode(composerDraftTarget, mode);
       if (isLocalDraftThread) {
         setDraftThreadContext(composerDraftTarget, { interactionMode: mode });
+      } else if (serverModeThreadId) {
+        void setThreadInteractionMode({
+          environmentId,
+          input: { threadId: serverModeThreadId, interactionMode: mode },
+        }).then((result) => {
+          if (result._tag !== "Failure") return;
+          if (
+            useComposerDraftStore.getState().getComposerDraft(composerDraftTarget)
+              ?.interactionMode === mode
+          ) {
+            setComposerDraftInteractionMode(composerDraftTarget, null);
+          }
+          if (isAtomCommandInterrupted(result)) return;
+          toastManager.add(
+            stackedThreadToast({
+              type: "error",
+              title: "Could not change interaction mode",
+              description: chatActionErrorMessage(squashAtomCommandFailure(result)),
+            }),
+          );
+        });
       }
       scheduleComposerFocus();
     },
     [
+      composerDraftTarget,
+      environmentId,
       interactionMode,
       isLocalDraftThread,
       scheduleComposerFocus,
-      composerDraftTarget,
+      serverModeThreadId,
       setComposerDraftInteractionMode,
       setDraftThreadContext,
+      setThreadInteractionMode,
     ],
   );
   const toggleInteractionMode = useCallback(() => {

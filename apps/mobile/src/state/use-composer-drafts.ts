@@ -137,9 +137,22 @@ function isEmptyDraft(draft: ComposerDraft): boolean {
 
 export function decodePersistedComposerDrafts(value: unknown): Record<string, ComposerDraft> {
   const parsed = decodePersistedComposerDraftsDocument(value);
-  return Object.fromEntries(
-    Object.entries(parsed.drafts).filter(([, draft]) => !isEmptyDraft(draft)),
-  );
+  const drafts: Record<string, ComposerDraft> = {};
+  for (const [draftKey, draft] of Object.entries(parsed.drafts)) {
+    let decodedDraft: ComposerDraft = draft;
+    if (!draftKey.startsWith("new-task:") && !draftKey.startsWith("pending-task:")) {
+      const {
+        runtimeMode: _runtimeMode,
+        interactionMode: _interactionMode,
+        ...threadDraft
+      } = draft;
+      decodedDraft = threadDraft;
+    }
+    if (!isEmptyDraft(decodedDraft)) {
+      drafts[draftKey] = decodedDraft;
+    }
+  }
+  return drafts;
 }
 
 async function getComposerDraftsFile() {

@@ -1649,6 +1649,22 @@ describe("composerDraftStore runtime and interaction settings", () => {
 
     expect(draftFor(threadId, TEST_ENVIRONMENT_ID)).toBeUndefined();
   });
+
+  it("keeps unsent content when confirmed mode overrides are cleared", () => {
+    const store = useComposerDraftStore.getState();
+
+    store.setPrompt(threadRef, "keep this draft");
+    store.setRuntimeMode(threadRef, "approval-required");
+    store.setInteractionMode(threadRef, "plan");
+    store.setRuntimeMode(threadRef, null);
+    store.setInteractionMode(threadRef, null);
+
+    expect(draftFor(threadId, TEST_ENVIRONMENT_ID)).toMatchObject({
+      prompt: "keep this draft",
+      runtimeMode: null,
+      interactionMode: null,
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------

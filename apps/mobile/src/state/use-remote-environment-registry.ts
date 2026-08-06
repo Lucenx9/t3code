@@ -27,13 +27,33 @@ const connectionPairingUrlAtom = Atom.make("").pipe(
   Atom.withLabel("mobile:connection-pairing-url"),
 );
 
-const pendingConnectionErrorAtom = Atom.make<string | null>(null).pipe(
+interface PendingConnectionError {
+  readonly id: number;
+  readonly message: string;
+}
+
+let nextPendingConnectionErrorId = 0;
+
+const pendingConnectionErrorAtom = Atom.make<PendingConnectionError | null>(null).pipe(
   Atom.keepAlive,
   Atom.withLabel("mobile:pending-connection-error"),
 );
 
-export function setPendingConnectionError(message: string | null): void {
-  appAtomRegistry.set(pendingConnectionErrorAtom, message);
+export function setPendingConnectionError(message: string | null): number | null {
+  if (message === null) {
+    appAtomRegistry.set(pendingConnectionErrorAtom, null);
+    return null;
+  }
+  const id = ++nextPendingConnectionErrorId;
+  appAtomRegistry.set(pendingConnectionErrorAtom, { id, message });
+  return id;
+}
+
+export function clearPendingConnectionError(id: number): void {
+  const pendingError = appAtomRegistry.get(pendingConnectionErrorAtom);
+  if (pendingError?.id === id) {
+    appAtomRegistry.set(pendingConnectionErrorAtom, null);
+  }
 }
 
 function toSavedConnection(
@@ -147,7 +167,7 @@ export function useRemoteConnectionStatus() {
   return {
     connectedEnvironments,
     connectionState: workspace.state.connectionState,
-    connectionError: pendingConnectionError ?? workspace.state.connectionError,
+    connectionError: pendingConnectionError?.message ?? workspace.state.connectionError,
   };
 }
 
@@ -221,7 +241,7 @@ export function useRemoteConnections() {
     connectionPairingUrl,
     connectionState,
     connectionError,
-    pairingConnectionError: pendingConnectionError,
+    pairingConnectionError: pendingConnectionError?.message ?? null,
     connectedEnvironments,
     connectedEnvironmentCount: connectedEnvironments.length,
     onChangeConnectionPairingUrl,

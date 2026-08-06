@@ -66,6 +66,29 @@ describe("mobile composer drafts", () => {
     });
   });
 
+  it("preserves modes when hydrating an edited pending task", () => {
+    expect(
+      decodePersistedComposerDrafts({
+        schemaVersion: 1,
+        drafts: {
+          "pending-task:message-1": {
+            text: "edit this queued task",
+            attachments: [],
+            runtimeMode: "approval-required",
+            interactionMode: "plan",
+          },
+        },
+      }),
+    ).toEqual({
+      "pending-task:message-1": {
+        text: "edit this queued task",
+        attachments: [],
+        runtimeMode: "approval-required",
+        interactionMode: "plan",
+      },
+    });
+  });
+
   it("keeps legacy content-only drafts and rejects invalid selector state", () => {
     expect(
       decodePersistedComposerDrafts({
@@ -89,6 +112,27 @@ describe("mobile composer drafts", () => {
         },
       }),
     ).toThrow();
+  });
+
+  it("drops server-owned modes when hydrating an existing thread draft", () => {
+    expect(
+      decodePersistedComposerDrafts({
+        schemaVersion: 1,
+        drafts: {
+          "environment-1:thread-1": {
+            text: "keep this draft",
+            attachments: [],
+            runtimeMode: "approval-required",
+            interactionMode: "plan",
+          },
+        },
+      }),
+    ).toEqual({
+      "environment-1:thread-1": {
+        text: "keep this draft",
+        attachments: [],
+      },
+    });
   });
 
   it("clears sent content without clearing the selected model or workspace", () => {
