@@ -1,6 +1,9 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
+  CommandId,
+  IsoDateTime,
   ModelSelection as ModelSelectionSchema,
+  NonNegativeInt,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   ProviderInteractionMode as ProviderInteractionModeSchema,
   RuntimeMode as RuntimeModeSchema,
@@ -9,6 +12,7 @@ import {
   type ProviderInteractionMode,
   type RuntimeMode,
 } from "@t3tools/contracts";
+import type { PendingThreadModeSync } from "@t3tools/client-runtime/state/thread-mode-sync";
 import * as Schema from "effect/Schema";
 import { useEffect } from "react";
 import { Atom } from "effect/unstable/reactivity";
@@ -44,6 +48,8 @@ export interface ComposerDraft {
   readonly modelSelection?: ModelSelection;
   readonly runtimeMode?: RuntimeMode;
   readonly interactionMode?: ProviderInteractionMode;
+  readonly runtimeModeSync?: PendingThreadModeSync<RuntimeMode>;
+  readonly interactionModeSync?: PendingThreadModeSync<ProviderInteractionMode>;
   readonly workspaceSelection?: ComposerDraftWorkspaceSelection;
 }
 
@@ -62,7 +68,12 @@ export interface ComposerDraftWorkspaceSelection {
 
 export type ComposerDraftSettingsUpdate = Pick<
   ComposerDraft,
-  "modelSelection" | "runtimeMode" | "interactionMode" | "workspaceSelection"
+  | "modelSelection"
+  | "runtimeMode"
+  | "interactionMode"
+  | "runtimeModeSync"
+  | "interactionModeSync"
+  | "workspaceSelection"
 >;
 
 const ComposerDraftWorkspaceSelectionSchema = Schema.Struct({
@@ -72,6 +83,20 @@ const ComposerDraftWorkspaceSelectionSchema = Schema.Struct({
   startFromOrigin: Schema.optional(Schema.Boolean),
 });
 
+const PendingRuntimeModeSyncSchema = Schema.Struct({
+  value: RuntimeModeSchema,
+  commandId: CommandId,
+  createdAt: IsoDateTime,
+  dispatchSequence: Schema.NullOr(NonNegativeInt),
+});
+
+const PendingInteractionModeSyncSchema = Schema.Struct({
+  value: ProviderInteractionModeSchema,
+  commandId: CommandId,
+  createdAt: IsoDateTime,
+  dispatchSequence: Schema.NullOr(NonNegativeInt),
+});
+
 const ComposerDraftSchema = Schema.Struct({
   text: Schema.String,
   attachments: Schema.Array(DraftComposerImageAttachmentSchema),
@@ -79,6 +104,8 @@ const ComposerDraftSchema = Schema.Struct({
   modelSelection: Schema.optional(ModelSelectionSchema),
   runtimeMode: Schema.optional(RuntimeModeSchema),
   interactionMode: Schema.optional(ProviderInteractionModeSchema),
+  runtimeModeSync: Schema.optional(PendingRuntimeModeSyncSchema),
+  interactionModeSync: Schema.optional(PendingInteractionModeSyncSchema),
   workspaceSelection: Schema.optional(ComposerDraftWorkspaceSelectionSchema),
 });
 
@@ -131,6 +158,8 @@ function isEmptyDraft(draft: ComposerDraft): boolean {
     draft.modelSelection === undefined &&
     draft.runtimeMode === undefined &&
     draft.interactionMode === undefined &&
+    draft.runtimeModeSync === undefined &&
+    draft.interactionModeSync === undefined &&
     draft.workspaceSelection === undefined
   );
 }
@@ -144,9 +173,17 @@ export function decodePersistedComposerDrafts(value: unknown): Record<string, Co
       const {
         runtimeMode: _runtimeMode,
         interactionMode: _interactionMode,
+        runtimeModeSync,
+        interactionModeSync,
         ...threadDraft
       } = draft;
-      decodedDraft = threadDraft;
+      decodedDraft = {
+        ...threadDraft,
+        ...(runtimeModeSync ? { runtimeMode: runtimeModeSync.value, runtimeModeSync } : {}),
+        ...(interactionModeSync
+          ? { interactionMode: interactionModeSync.value, interactionModeSync }
+          : {}),
+      };
     }
     if (!isEmptyDraft(decodedDraft)) {
       drafts[draftKey] = decodedDraft;

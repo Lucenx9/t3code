@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "@effect/vitest";
-import { EnvironmentId, ProviderInstanceId } from "@t3tools/contracts";
+import { CommandId, EnvironmentId, ProviderInstanceId } from "@t3tools/contracts";
 
 import { appAtomRegistry } from "./atom-registry";
 import {
@@ -131,6 +131,46 @@ describe("mobile composer drafts", () => {
       "environment-1:thread-1": {
         text: "keep this draft",
         attachments: [],
+      },
+    });
+  });
+
+  it("hydrates pending existing-thread mode changes for retry", () => {
+    const runtimeModeSync = {
+      value: "approval-required" as const,
+      commandId: CommandId.make("command-runtime"),
+      createdAt: "2026-08-06T10:00:00.000Z",
+      dispatchSequence: null,
+    };
+    const interactionModeSync = {
+      value: "plan" as const,
+      commandId: CommandId.make("command-interaction"),
+      createdAt: "2026-08-06T10:00:01.000Z",
+      dispatchSequence: 12,
+    };
+
+    expect(
+      decodePersistedComposerDrafts({
+        schemaVersion: 1,
+        drafts: {
+          "environment-1:thread-1": {
+            text: "keep this draft",
+            attachments: [],
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            runtimeModeSync,
+            interactionModeSync,
+          },
+        },
+      }),
+    ).toEqual({
+      "environment-1:thread-1": {
+        text: "keep this draft",
+        attachments: [],
+        runtimeMode: runtimeModeSync.value,
+        interactionMode: interactionModeSync.value,
+        runtimeModeSync,
+        interactionModeSync,
       },
     });
   });

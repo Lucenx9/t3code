@@ -1,5 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo } from "react";
 
 import {
   CommandId,
@@ -11,10 +11,8 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import { safeErrorLogAttributes } from "@t3tools/client-runtime/errors";
-import { isAtomCommandInterrupted } from "@t3tools/client-runtime/state/runtime";
+import { beginThreadModeSync } from "@t3tools/client-runtime/state/thread-mode-sync";
 import { deriveActiveWorkStartedAt } from "@t3tools/shared/orchestrationTiming";
-import * as Cause from "effect/Cause";
-import { AsyncResult } from "effect/unstable/reactivity";
 
 import { makeQueuedMessageMetadata } from "../lib/commandMetadata";
 import {
@@ -25,6 +23,7 @@ import {
 import type { DraftComposerImageAttachment } from "../lib/composerImages";
 import { scopedThreadKey } from "../lib/scopedEntities";
 import { buildThreadFeed } from "../lib/threadActivity";
+import { uuidv4 } from "../lib/uuid";
 import { appAtomRegistry } from "../state/atom-registry";
 import {
   appendComposerDraftAttachments,
@@ -39,16 +38,10 @@ import {
   updateComposerDraftSettings,
   useComposerDraft,
 } from "./use-composer-drafts";
-import {
-  clearPendingConnectionError,
-  setPendingConnectionError,
-} from "../state/use-remote-environment-registry";
+import { setPendingConnectionError } from "../state/use-remote-environment-registry";
 import { useSelectedThreadDetail } from "../state/use-thread-detail";
 import { useThreadSelection } from "../state/use-thread-selection";
 import { enqueueThreadOutboxMessage } from "./thread-outbox";
-import { shouldRetryThreadOutboxDelivery } from "./thread-outbox-model";
-import { threadEnvironment } from "./threads";
-import { useAtomCommand } from "./use-atom-command";
 import { useThreadOutboxMessages } from "./use-thread-outbox";
 
 export function appendReviewCommentToDraft(input: {
@@ -83,18 +76,10 @@ export function useThreadDraftForThread(input: {
 }
 
 export function useThreadComposerState() {
-  const setThreadRuntimeMode = useAtomCommand(threadEnvironment.setRuntimeMode, {
-    reportFailure: false,
-  });
-  const setThreadInteractionMode = useAtomCommand(threadEnvironment.setInteractionMode, {
-    reportFailure: false,
-  });
   const { selectedThread: selectedThreadShell } = useThreadSelection();
   const selectedThreadDetail = useSelectedThreadDetail();
   const composerDrafts = useAtomValue(composerDraftsAtom);
   const queuedMessagesByThreadKey = useThreadOutboxMessages();
-  const runtimeModeErrorIdRef = useRef<number | null>(null);
-  const interactionModeErrorIdRef = useRef<number | null>(null);
 
   useEffect(() => {
     ensureComposerDraftsLoaded();
@@ -120,30 +105,6 @@ export function useThreadComposerState() {
   const modelSelection = selectedDraft?.modelSelection ?? selectedThread?.modelSelection ?? null;
   const runtimeMode = selectedDraft?.runtimeMode ?? selectedThread?.runtimeMode ?? null;
   const interactionMode = selectedDraft?.interactionMode ?? selectedThread?.interactionMode ?? null;
-
-  useEffect(() => {
-    if (!selectedThreadKey || !selectedThread) {
-      return;
-    }
-    const runtimeModeConfirmed =
-      selectedDraft?.runtimeMode !== undefined &&
-      selectedDraft.runtimeMode === selectedThread.runtimeMode;
-    const interactionModeConfirmed =
-      selectedDraft?.interactionMode !== undefined &&
-      selectedDraft.interactionMode === selectedThread.interactionMode;
-    if (!runtimeModeConfirmed && !interactionModeConfirmed) {
-      return;
-    }
-    updateComposerDraftSettings(selectedThreadKey, {
-      ...(runtimeModeConfirmed ? { runtimeMode: undefined } : {}),
-      ...(interactionModeConfirmed ? { interactionMode: undefined } : {}),
-    });
-  }, [
-    selectedDraft?.interactionMode,
-    selectedDraft?.runtimeMode,
-    selectedThread,
-    selectedThreadKey,
-  ]);
 
   const selectedThreadSessionActivity = useMemo(() => {
     const selectedThread = selectedThreadDetail ?? selectedThreadShell;
@@ -325,34 +286,16 @@ export function useThreadComposerState() {
       if (!selectedThreadKey || !selectedThreadShell || value === runtimeMode) {
         return;
       }
-      updateComposerDraftSettings(selectedThreadKey, { runtimeMode: value });
-      void setThreadRuntimeMode({
-        environmentId: selectedThreadShell.environmentId,
-        input: { threadId: selectedThreadShell.id, runtimeMode: value },
-      }).then((result) => {
-        if (!AsyncResult.isFailure(result)) {
-          if (runtimeModeErrorIdRef.current !== null) {
-            clearPendingConnectionError(runtimeModeErrorIdRef.current);
-            runtimeModeErrorIdRef.current = null;
-          }
-          return;
-        }
-        const error = Cause.squash(result.cause);
-        if (
-          !shouldRetryThreadOutboxDelivery(error) &&
-          getComposerDraftSnapshot(selectedThreadKey).runtimeMode === value
-        ) {
-          updateComposerDraftSettings(selectedThreadKey, { runtimeMode: undefined });
-        }
-        if (isAtomCommandInterrupted(result)) {
-          return;
-        }
-        runtimeModeErrorIdRef.current = setPendingConnectionError(
-          error instanceof Error ? error.message : "Failed to change access mode.",
-        );
+      updateComposerDraftSettings(selectedThreadKey, {
+        runtimeMode: value,
+        runtimeModeSync: beginThreadModeSync(
+          value,
+          CommandId.make(uuidv4()),
+          new Date().toISOString(),
+        ),
       });
     },
-    [runtimeMode, selectedThreadKey, selectedThreadShell, setThreadRuntimeMode],
+    [runtimeMode, selectedThreadKey, selectedThreadShell],
   );
 
   const onUpdateInteractionMode = useCallback(
@@ -360,34 +303,16 @@ export function useThreadComposerState() {
       if (!selectedThreadKey || !selectedThreadShell || value === interactionMode) {
         return;
       }
-      updateComposerDraftSettings(selectedThreadKey, { interactionMode: value });
-      void setThreadInteractionMode({
-        environmentId: selectedThreadShell.environmentId,
-        input: { threadId: selectedThreadShell.id, interactionMode: value },
-      }).then((result) => {
-        if (!AsyncResult.isFailure(result)) {
-          if (interactionModeErrorIdRef.current !== null) {
-            clearPendingConnectionError(interactionModeErrorIdRef.current);
-            interactionModeErrorIdRef.current = null;
-          }
-          return;
-        }
-        const error = Cause.squash(result.cause);
-        if (
-          !shouldRetryThreadOutboxDelivery(error) &&
-          getComposerDraftSnapshot(selectedThreadKey).interactionMode === value
-        ) {
-          updateComposerDraftSettings(selectedThreadKey, { interactionMode: undefined });
-        }
-        if (isAtomCommandInterrupted(result)) {
-          return;
-        }
-        interactionModeErrorIdRef.current = setPendingConnectionError(
-          error instanceof Error ? error.message : "Failed to change interaction mode.",
-        );
+      updateComposerDraftSettings(selectedThreadKey, {
+        interactionMode: value,
+        interactionModeSync: beginThreadModeSync(
+          value,
+          CommandId.make(uuidv4()),
+          new Date().toISOString(),
+        ),
       });
     },
-    [interactionMode, selectedThreadKey, selectedThreadShell, setThreadInteractionMode],
+    [interactionMode, selectedThreadKey, selectedThreadShell],
   );
 
   return {

@@ -65,6 +65,13 @@ import {
   squashAtomCommandFailure,
   type AtomCommandResult,
 } from "@t3tools/client-runtime/state/runtime";
+import {
+  acknowledgeThreadModeSync,
+  beginThreadModeSync,
+  failThreadModeSync,
+  recordThreadModeDispatch,
+  type PendingThreadModeSync,
+} from "@t3tools/client-runtime/state/thread-mode-sync";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { isElectron } from "../env";
@@ -173,7 +180,7 @@ import {
   nextProjectScriptId,
   projectScriptIdFromCommand,
 } from "~/projectScripts";
-import { newDraftId, newMessageId, newThreadId } from "~/lib/utils";
+import { newCommandId, newDraftId, newMessageId, newThreadId } from "~/lib/utils";
 import { getProviderModelCapabilities, resolveSelectableProvider } from "../providerModels";
 import { NO_PROVIDER_MODEL_SELECTION } from "../providerInstances";
 import { useClientSettings, useEnvironmentSettings } from "../hooks/useSettings";
@@ -230,7 +237,7 @@ import {
   useThreadRefs,
   useThreadShell,
 } from "../state/entities";
-import { environmentShell } from "../state/shell";
+import { environmentShell, environmentSnapshotAtom } from "../state/shell";
 import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
 import { DraftHeroHeadline } from "./chat/DraftHeroHeadline";
 import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
@@ -1152,6 +1159,26 @@ function chatActionErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "An error occurred.";
 }
 
+function usePendingThreadModeSync<Value>() {
+  const [pending, setPendingState] = useState<PendingThreadModeSync<Value> | null>(null);
+  const pendingRef = useRef(pending);
+  const updatePending = useCallback(
+    (
+      update: (current: PendingThreadModeSync<Value> | null) => PendingThreadModeSync<Value> | null,
+    ) => {
+      const previous = pendingRef.current;
+      const next = update(previous);
+      if (next !== previous) {
+        pendingRef.current = next;
+        setPendingState(next);
+      }
+      return { previous, next };
+    },
+    [],
+  );
+  return [pending, updatePending] as const;
+}
+
 function ChatViewContent(props: ChatViewProps) {
   const {
     environmentId,
@@ -1189,6 +1216,11 @@ function ChatViewContent(props: ChatViewProps) {
   const setThreadInteractionMode = useAtomCommand(threadEnvironment.setInteractionMode, {
     reportFailure: false,
   });
+  const [pendingRuntimeModeSync, updatePendingRuntimeModeSync] =
+    usePendingThreadModeSync<RuntimeMode>();
+  const [pendingInteractionModeSync, updatePendingInteractionModeSync] =
+    usePendingThreadModeSync<ProviderInteractionMode>();
+  const environmentSnapshot = useAtomValue(environmentSnapshotAtom(environmentId));
   const startThreadTurn = useAtomCommand(threadEnvironment.startTurn, { reportFailure: false });
   const interruptThreadTurn = useAtomCommand(threadEnvironment.interruptTurn, {
     reportFailure: false,
@@ -1472,8 +1504,11 @@ function ChatViewContent(props: ChatViewProps) {
   const canCheckoutPullRequestIntoThread = isLocalDraftThread;
   const activeThreadId = activeThread?.id ?? null;
   const serverModeThreadId = activeThreadId ?? (routeKind === "server" ? threadId : null);
+  const appliedShellSequence = environmentSnapshot?.snapshotSequence ?? null;
 
   useLayoutEffect(() => {
+    updatePendingRuntimeModeSync(() => null);
+    updatePendingInteractionModeSync(() => null);
     if (routeKind !== "server") return;
     setComposerDraftRuntimeMode(composerDraftTarget, null);
     setComposerDraftInteractionMode(composerDraftTarget, null);
@@ -1483,26 +1518,40 @@ function ChatViewContent(props: ChatViewProps) {
     routeThreadKey,
     setComposerDraftInteractionMode,
     setComposerDraftRuntimeMode,
+    updatePendingInteractionModeSync,
+    updatePendingRuntimeModeSync,
   ]);
 
   useEffect(() => {
-    if (!activeServerThread) return;
-    if (composerRuntimeMode !== null && composerRuntimeMode === activeServerThread.runtimeMode) {
-      setComposerDraftRuntimeMode(composerDraftTarget, null);
+    if (routeKind !== "server") return;
+    const runtimeTransition = updatePendingRuntimeModeSync((current) =>
+      acknowledgeThreadModeSync(current, appliedShellSequence),
+    );
+    if (runtimeTransition.previous !== null && runtimeTransition.next === null) {
+      const currentDraft = useComposerDraftStore.getState().getComposerDraft(composerDraftTarget);
+      if (currentDraft?.runtimeMode === runtimeTransition.previous.value) {
+        setComposerDraftRuntimeMode(composerDraftTarget, null);
+      }
     }
-    if (
-      composerInteractionMode !== null &&
-      composerInteractionMode === activeServerThread.interactionMode
-    ) {
-      setComposerDraftInteractionMode(composerDraftTarget, null);
+    const interactionTransition = updatePendingInteractionModeSync((current) =>
+      acknowledgeThreadModeSync(current, appliedShellSequence),
+    );
+    if (interactionTransition.previous !== null && interactionTransition.next === null) {
+      const currentDraft = useComposerDraftStore.getState().getComposerDraft(composerDraftTarget);
+      if (currentDraft?.interactionMode === interactionTransition.previous.value) {
+        setComposerDraftInteractionMode(composerDraftTarget, null);
+      }
     }
   }, [
-    activeServerThread,
+    appliedShellSequence,
     composerDraftTarget,
-    composerInteractionMode,
-    composerRuntimeMode,
+    pendingInteractionModeSync,
+    pendingRuntimeModeSync,
+    routeKind,
     setComposerDraftInteractionMode,
     setComposerDraftRuntimeMode,
+    updatePendingInteractionModeSync,
+    updatePendingRuntimeModeSync,
   ]);
 
   const runningTerminalIds = useThreadRunningTerminalIds({
@@ -3122,14 +3171,30 @@ function ChatViewContent(props: ChatViewProps) {
       if (isLocalDraftThread) {
         setDraftThreadContext(composerDraftTarget, { runtimeMode: mode });
       } else if (serverModeThreadId) {
+        const pending = beginThreadModeSync(mode, newCommandId(), new Date().toISOString());
+        updatePendingRuntimeModeSync(() => pending);
         void setThreadRuntimeMode({
           environmentId,
-          input: { threadId: serverModeThreadId, runtimeMode: mode },
+          input: {
+            threadId: serverModeThreadId,
+            runtimeMode: mode,
+            commandId: pending.commandId,
+            createdAt: pending.createdAt,
+          },
         }).then((result) => {
-          if (result._tag !== "Failure") return;
+          if (result._tag === "Success") {
+            updatePendingRuntimeModeSync((current) =>
+              recordThreadModeDispatch(current, pending.commandId, result.value.sequence),
+            );
+            return;
+          }
+          const transition = updatePendingRuntimeModeSync((current) =>
+            failThreadModeSync(current, pending.commandId, false),
+          );
+          if (transition.previous?.commandId !== pending.commandId) return;
           if (
             useComposerDraftStore.getState().getComposerDraft(composerDraftTarget)?.runtimeMode ===
-            mode
+            transition.previous.value
           ) {
             setComposerDraftRuntimeMode(composerDraftTarget, null);
           }
@@ -3155,6 +3220,7 @@ function ChatViewContent(props: ChatViewProps) {
       setComposerDraftRuntimeMode,
       setDraftThreadContext,
       setThreadRuntimeMode,
+      updatePendingRuntimeModeSync,
     ],
   );
 
@@ -3165,14 +3231,30 @@ function ChatViewContent(props: ChatViewProps) {
       if (isLocalDraftThread) {
         setDraftThreadContext(composerDraftTarget, { interactionMode: mode });
       } else if (serverModeThreadId) {
+        const pending = beginThreadModeSync(mode, newCommandId(), new Date().toISOString());
+        updatePendingInteractionModeSync(() => pending);
         void setThreadInteractionMode({
           environmentId,
-          input: { threadId: serverModeThreadId, interactionMode: mode },
+          input: {
+            threadId: serverModeThreadId,
+            interactionMode: mode,
+            commandId: pending.commandId,
+            createdAt: pending.createdAt,
+          },
         }).then((result) => {
-          if (result._tag !== "Failure") return;
+          if (result._tag === "Success") {
+            updatePendingInteractionModeSync((current) =>
+              recordThreadModeDispatch(current, pending.commandId, result.value.sequence),
+            );
+            return;
+          }
+          const transition = updatePendingInteractionModeSync((current) =>
+            failThreadModeSync(current, pending.commandId, false),
+          );
+          if (transition.previous?.commandId !== pending.commandId) return;
           if (
             useComposerDraftStore.getState().getComposerDraft(composerDraftTarget)
-              ?.interactionMode === mode
+              ?.interactionMode === transition.previous.value
           ) {
             setComposerDraftInteractionMode(composerDraftTarget, null);
           }
@@ -3198,6 +3280,7 @@ function ChatViewContent(props: ChatViewProps) {
       setComposerDraftInteractionMode,
       setDraftThreadContext,
       setThreadInteractionMode,
+      updatePendingInteractionModeSync,
     ],
   );
   const toggleInteractionMode = useCallback(() => {

@@ -63,6 +63,7 @@ import {
 import { NATIVE_LIQUID_GLASS_SUPPORTED } from "./native/native-glass";
 import { nativeHeaderScrollEdgeEffects } from "./native/StackHeader";
 import { useThreadOutboxDrain } from "./state/use-thread-outbox-drain";
+import { useThreadModeSyncDrain } from "./state/use-thread-mode-sync-drain";
 
 const HEADER_SCROLL_EDGE_EFFECTS = nativeHeaderScrollEdgeEffects(Platform.OS, Platform.Version);
 
@@ -293,12 +294,12 @@ function workspacePathFromState(state: NavigationState): string {
   return path.startsWith("/") ? path : `/${path}`;
 }
 
-// The drain hook subscribes to the outbox, all thread shells, projects, and
-// connection statuses. Hosting it in a null-rendering leaf keeps those
-// updates from re-rendering RootStackLayout (and with it every screen) on
-// each enqueue, shell change, or reconnect.
-function ThreadOutboxDrainWorker() {
+// The sync hooks subscribe to queued work, thread shells, and connection
+// statuses. Hosting them in a null-rendering leaf keeps those updates from
+// re-rendering RootStackLayout (and with it every screen).
+function BackgroundSyncWorker() {
   useThreadOutboxDrain();
+  useThreadModeSyncDrain();
   return null;
 }
 
@@ -337,7 +338,7 @@ function RootStackLayout(props: {
 
   return (
     <HardwareKeyboardCommandProvider pathname={pathname}>
-      <ThreadOutboxDrainWorker />
+      <BackgroundSyncWorker />
       <ShowcaseCaptureCoordinator pathname={pathname} />
       <ClerkSettingsSheetDetentProvider initiallyExpanded={false}>
         <AdaptiveWorkspaceLayout pathname={workspacePathname}>
