@@ -150,6 +150,10 @@ interface PullRequestInfo extends OpenPrInfo, PullRequestHeadRemoteInfo {
   updatedAt: Option.Option<DateTime.Utc>;
 }
 
+type PrLookupOutcome =
+  | { readonly _tag: "Complete"; readonly latest: PullRequestInfo | null }
+  | { readonly _tag: "ProviderUnknown" };
+
 const pullRequestUpdatedAtDescOrder: Order.Order<PullRequestInfo> = Order.mapInput(
   Order.flip(Option.makeOrder(DateTime.Order)),
   (pullRequest) => pullRequest.updatedAt,
@@ -935,10 +939,13 @@ export const make = Effect.gen(function* () {
         // Only skip when the branch is untracked as well: anything carrying an
         // upstream keeps the old behaviour.
         if (details.upstreamRef === null && (yield* isUnpublishedBranch(cwd, headContext))) {
-          return { latest: null, headContext };
+          return {
+            outcome: { _tag: "Complete", latest: null } satisfies PrLookupOutcome,
+            headContext,
+          };
         }
-        const latest = yield* findLatestPrForHeadContext(cwd, headContext);
-        return { latest, headContext };
+        const outcome = yield* findLatestPrForHeadContext(cwd, headContext);
+        return { outcome, headContext };
       });
     },
     {
@@ -946,7 +953,9 @@ export const make = Effect.gen(function* () {
       timeToLive: (exit, key) => {
         if (Exit.isSuccess(exit)) {
           prLookupFailureStreakByKey.delete(key);
-          return PR_LOOKUP_CACHE_TTL;
+          return exit.value.outcome._tag === "ProviderUnknown"
+            ? PR_LOOKUP_FAILURE_BASE_TTL
+            : PR_LOOKUP_CACHE_TTL;
         }
         return nextPrLookupFailureTtl(key);
       },
@@ -1018,27 +1027,32 @@ export const make = Effect.gen(function* () {
     // `push -u`) must not orphan the fallback value for the same branch.
     const branchKey = `${cwd}\u0000${details.branch}`;
     return yield* Cache.get(prLookupCache, prLookupCacheKey(cwd, details)).pipe(
-      Effect.map(({ latest, headContext }) => {
-        if (!latest) return { pr: null, headContext };
-        // On the default branch, only surface open PRs.
-        // Merged/closed matches are usually reverse-merge history, not the thread's PR context.
-        if (details.isDefaultBranch && latest.state !== "open") {
-          return { pr: null, headContext };
+      Effect.flatMap(({ outcome, headContext }) => {
+        const lastKnownContext = {
+          upstreamRef: details.upstreamRef,
+          headBranch: headContext.headBranch,
+          remoteName: headContext.remoteName,
+          headRemoteUrlKey: headContext.headRemoteUrlKey,
+        };
+        if (outcome._tag === "ProviderUnknown") {
+          return Effect.succeed(resolveLastKnownPr(branchKey, lastKnownContext));
         }
-        return { pr: toStatusPr(latest), headContext };
-      }),
-      Effect.tap(({ pr, headContext }) =>
-        Effect.sync(() =>
+
+        const pr =
+          outcome.latest === null ||
+          // On the default branch, only surface open PRs. Merged/closed
+          // matches are usually reverse-merge history, not the thread's PR.
+          (details.isDefaultBranch && outcome.latest.state !== "open")
+            ? null
+            : toStatusPr(outcome.latest);
+        return Effect.sync(() => {
           rememberLastKnownPr(branchKey, {
             pr,
-            upstreamRef: details.upstreamRef,
-            headBranch: headContext.headBranch,
-            remoteName: headContext.remoteName,
-            headRemoteUrlKey: headContext.headRemoteUrlKey,
-          }),
-        ),
-      ),
-      Effect.map(({ pr }) => pr),
+            ...lastKnownContext,
+          });
+          return pr;
+        });
+      }),
       Effect.catch((error) =>
         Effect.logWarning("PR lookup failed; keeping last known PR state.").pipe(
           Effect.annotateLogs({
@@ -1294,7 +1308,7 @@ export const make = Effect.gen(function* () {
   ) {
     const provider = yield* sourceControlProvider(cwd);
     if (provider.kind === "unknown") {
-      return null;
+      return { _tag: "ProviderUnknown" } satisfies PrLookupOutcome;
     }
     const parsedByNumber = new Map<number, PullRequestInfo>();
 
@@ -1318,9 +1332,9 @@ export const make = Effect.gen(function* () {
 
     const latestOpenPr = parsed.find((pr) => pr.state === "open");
     if (latestOpenPr) {
-      return latestOpenPr;
+      return { _tag: "Complete", latest: latestOpenPr } satisfies PrLookupOutcome;
     }
-    return parsed[0] ?? null;
+    return { _tag: "Complete", latest: parsed[0] ?? null } satisfies PrLookupOutcome;
   });
   const buildCompletionToast = Effect.fn("buildCompletionToast")(function* (
     cwd: string,
