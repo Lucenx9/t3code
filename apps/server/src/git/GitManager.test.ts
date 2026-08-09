@@ -25,6 +25,7 @@ import {
   GitCommandError,
   ProviderDriverKind,
   ProviderInstanceId,
+  type SourceControlProviderKind,
   TextGenerationError,
 } from "@t3tools/contracts";
 import * as GitHubCli from "../sourceControl/GitHubCli.ts";
@@ -618,6 +619,7 @@ function makeManager(input?: {
   textGeneration?: Partial<FakeGitTextGeneration>;
   serverSettings?: Parameters<typeof ServerSettings.layerTest>[0];
   setupScriptRunner?: ProjectSetupScriptRunner.ProjectSetupScriptRunner["Service"];
+  sourceControlProviderKind?: SourceControlProviderKind;
 }) {
   const { service: gitHubCli, ghCalls } = createGitHubCliWithFakeGh(input?.ghScenario);
   const textGeneration = createTextGeneration(input?.textGeneration);
@@ -635,14 +637,18 @@ function makeManager(input?: {
   const sourceControlRegistryLayer = Layer.effect(
     SourceControlProviderRegistry.SourceControlProviderRegistry,
     GitHubSourceControlProvider.make.pipe(
-      Effect.map((provider) =>
-        SourceControlProviderRegistry.SourceControlProviderRegistry.of({
-          get: () => Effect.succeed(provider),
-          resolveHandle: () => Effect.succeed({ provider, context: null }),
-          resolve: () => Effect.succeed(provider),
+      Effect.map((provider) => {
+        const sourceControlProvider = {
+          ...provider,
+          kind: input?.sourceControlProviderKind ?? provider.kind,
+        };
+        return SourceControlProviderRegistry.SourceControlProviderRegistry.of({
+          get: () => Effect.succeed(sourceControlProvider),
+          resolveHandle: () => Effect.succeed({ provider: sourceControlProvider, context: null }),
+          resolve: () => Effect.succeed(sourceControlProvider),
           discover: Effect.succeed([]),
-        }),
-      ),
+        });
+      }),
       Effect.provide(Layer.succeed(GitHubCli.GitHubCli, gitHubCli)),
     ),
   );
@@ -914,6 +920,23 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
         aheadOfDefaultCount: 0,
         pr: null,
       });
+    }),
+  );
+
+  it.effect("status skips the PR lookup for repositories without remotes", () =>
+    Effect.gen(function* () {
+      const repoDir = yield* makeTempDir("t3code-git-manager-");
+      yield* initRepo(repoDir);
+      const { manager, ghCalls } = yield* makeManager({
+        sourceControlProviderKind: "unknown",
+      });
+
+      const status = yield* manager.status({ cwd: repoDir });
+
+      expect(status.isRepo).toBe(true);
+      expect(status.hasPrimaryRemote).toBe(false);
+      expect(status.pr).toBeNull();
+      expect(ghCalls.filter((call) => call.startsWith("pr list "))).toHaveLength(0);
     }),
   );
 

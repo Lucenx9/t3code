@@ -1292,10 +1292,14 @@ export const make = Effect.gen(function* () {
     cwd: string,
     headContext: BranchHeadContext,
   ) {
+    const provider = yield* sourceControlProvider(cwd);
+    if (provider.kind === "unknown") {
+      return null;
+    }
     const parsedByNumber = new Map<number, PullRequestInfo>();
 
     for (const headSelector of headContext.headSelectors) {
-      const pullRequests = yield* (yield* sourceControlProvider(cwd)).listChangeRequests({
+      const pullRequests = yield* provider.listChangeRequests({
         cwd,
         headSelector,
         state: "all",
