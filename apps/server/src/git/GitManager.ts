@@ -892,11 +892,11 @@ export const make = Effect.gen(function* () {
     normalizeStatusCacheKey(cwd).pipe(
       Effect.flatMap((cacheKey) => Cache.invalidate(localStatusResultCache, cacheKey)),
     );
-  // PR lookups hit the hosting provider's API (gh/glab/...), so they refresh
-  // on their own, slower cadence: ahead/behind counts stay fresh on every
-  // status poll while the PR association is re-fetched at most once per
-  // PR_LOOKUP_CACHE_TTL per branch. Git actions and user-driven refreshes bump
-  // the epoch (invalidateStatus) to bypass the cache immediately.
+  // PR lookups hit the hosting provider's API (gh/glab/...), so definitive
+  // results refresh on the slower PR_LOOKUP_CACHE_TTL cadence. An unresolved
+  // provider starts at the shorter failure cadence and backs off while it stays
+  // unresolved. Git actions and user-driven refreshes bump the epoch
+  // (invalidateStatus) to bypass the cache immediately.
   const prLookupEpochByCwd = new Map<string, number>();
   const prLookupEpoch = (cwd: string) => prLookupEpochByCwd.get(cwd) ?? 0;
   const bumpPrLookupEpoch = (cwd: string) =>
@@ -910,8 +910,9 @@ export const make = Effect.gen(function* () {
   // back to a null upstreamRef.
   const prLookupCacheKey = (cwd: string, details: { branch: string; upstreamRef: string | null }) =>
     [cwd, details.branch, details.upstreamRef ?? "", String(prLookupEpoch(cwd))].join("\u0000");
-  // Consecutive failures per cache key, so a branch that keeps failing waits
-  // longer before the next attempt. Cleared as soon as a lookup succeeds.
+  // Consecutive failed or non-definitive attempts per cache key, so a branch
+  // that keeps failing waits longer before the next attempt. Cleared as soon
+  // as the lookup produces a definitive result.
   const prLookupFailureStreakByKey = new Map<string, number>();
   const nextPrLookupFailureTtl = (key: string) => {
     if (
@@ -952,10 +953,11 @@ export const make = Effect.gen(function* () {
       capacity: PR_LOOKUP_CACHE_CAPACITY,
       timeToLive: (exit, key) => {
         if (Exit.isSuccess(exit)) {
+          if (exit.value.outcome._tag === "ProviderUnknown") {
+            return nextPrLookupFailureTtl(key);
+          }
           prLookupFailureStreakByKey.delete(key);
-          return exit.value.outcome._tag === "ProviderUnknown"
-            ? PR_LOOKUP_FAILURE_BASE_TTL
-            : PR_LOOKUP_CACHE_TTL;
+          return PR_LOOKUP_CACHE_TTL;
         }
         return nextPrLookupFailureTtl(key);
       },

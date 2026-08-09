@@ -989,6 +989,53 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
     }),
   );
 
+  it.effect("status keeps the PR failure backoff through an unknown provider result", () =>
+    Effect.gen(function* () {
+      const repoDir = yield* makeTempDir("t3code-git-manager-");
+      yield* initRepo(repoDir);
+      yield* runGit(repoDir, ["checkout", "-b", "feature/provider-backoff"]);
+      const remoteDir = yield* createBareRemote();
+      yield* runGit(repoDir, ["remote", "add", "origin", remoteDir]);
+      yield* runGit(repoDir, ["push", "-u", "origin", "feature/provider-backoff"]);
+
+      let providerKind: SourceControlProviderKind = "github";
+      const { manager, ghCalls } = yield* makeManager({
+        sourceControlProviderKind: () => providerKind,
+        ghScenario: {
+          failWith: new GitHubCli.GitHubCliUnavailableError({
+            command: "gh",
+            cwd: repoDir,
+            cause: new Error("rate limited"),
+          }),
+        },
+      });
+
+      const first = yield* manager.status({ cwd: repoDir });
+      expect(first.pr).toBeNull();
+      expect(ghCalls.filter((call) => call.startsWith("pr list "))).toHaveLength(1);
+
+      providerKind = "unknown";
+      yield* TestClock.adjust(Duration.seconds(20));
+
+      const unknown = yield* manager.status({ cwd: repoDir });
+      expect(unknown.pr).toBeNull();
+      expect(ghCalls.filter((call) => call.startsWith("pr list "))).toHaveLength(1);
+
+      providerKind = "github";
+      yield* TestClock.adjust(Duration.seconds(20));
+
+      const stillBackedOff = yield* manager.status({ cwd: repoDir });
+      expect(stillBackedOff.pr).toBeNull();
+      expect(ghCalls.filter((call) => call.startsWith("pr list "))).toHaveLength(1);
+
+      yield* TestClock.adjust(Duration.seconds(20));
+
+      const retried = yield* manager.status({ cwd: repoDir });
+      expect(retried.pr).toBeNull();
+      expect(ghCalls.filter((call) => call.startsWith("pr list "))).toHaveLength(2);
+    }),
+  );
+
   it.effect("status keeps the last known PR while the provider is temporarily unknown", () =>
     Effect.gen(function* () {
       const repoDir = yield* makeTempDir("t3code-git-manager-");
