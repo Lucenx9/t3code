@@ -895,8 +895,9 @@ export const make = Effect.gen(function* () {
   // PR lookups hit the hosting provider's API (gh/glab/...), so definitive
   // results refresh on the slower PR_LOOKUP_CACHE_TTL cadence. An unresolved
   // provider starts at the shorter failure cadence and backs off while it stays
-  // unresolved. Git actions and user-driven refreshes bump the epoch
-  // (invalidateStatus) to bypass the cache immediately.
+  // unresolved, capped at the healthy lookup cadence. Git actions and
+  // user-driven refreshes bump the epoch (invalidateStatus) to bypass the cache
+  // immediately.
   const prLookupEpochByCwd = new Map<string, number>();
   const prLookupEpoch = (cwd: string) => prLookupEpochByCwd.get(cwd) ?? 0;
   const bumpPrLookupEpoch = (cwd: string) =>
@@ -954,7 +955,7 @@ export const make = Effect.gen(function* () {
       timeToLive: (exit, key) => {
         if (Exit.isSuccess(exit)) {
           if (exit.value.outcome._tag === "ProviderUnknown") {
-            return nextPrLookupFailureTtl(key);
+            return Duration.min(nextPrLookupFailureTtl(key), PR_LOOKUP_CACHE_TTL);
           }
           prLookupFailureStreakByKey.delete(key);
           return PR_LOOKUP_CACHE_TTL;

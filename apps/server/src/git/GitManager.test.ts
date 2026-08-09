@@ -989,6 +989,53 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
     }),
   );
 
+  it.effect("status caps unknown-provider backoff at the healthy PR lookup cadence", () =>
+    Effect.gen(function* () {
+      const repoDir = yield* makeTempDir("t3code-git-manager-");
+      yield* initRepo(repoDir);
+      yield* runGit(repoDir, ["checkout", "-b", "feature/provider-backoff-cap"]);
+      const remoteDir = yield* createBareRemote();
+      yield* runGit(repoDir, ["remote", "add", "origin", remoteDir]);
+      yield* runGit(repoDir, ["push", "-u", "origin", "feature/provider-backoff-cap"]);
+
+      let providerKind: SourceControlProviderKind = "unknown";
+      const existingPr = {
+        number: 413,
+        title: "Provider backoff cap PR",
+        url: "https://github.com/pingdotgg/t3code/pull/413",
+        baseRefName: "main",
+        headRefName: "feature/provider-backoff-cap",
+      };
+      const { manager, ghCalls } = yield* makeManager({
+        sourceControlProviderKind: () => providerKind,
+        ghScenario: {
+          // @effect-diagnostics-next-line preferSchemaOverJson:off
+          prListSequence: [JSON.stringify([existingPr])],
+        },
+      });
+
+      expect((yield* manager.status({ cwd: repoDir })).pr).toBeNull();
+      yield* TestClock.adjust(Duration.seconds(20));
+      expect((yield* manager.status({ cwd: repoDir })).pr).toBeNull();
+      yield* TestClock.adjust(Duration.seconds(40));
+      expect((yield* manager.status({ cwd: repoDir })).pr).toBeNull();
+      yield* TestClock.adjust(Duration.seconds(80));
+      expect((yield* manager.status({ cwd: repoDir })).pr).toBeNull();
+
+      providerKind = "github";
+      yield* TestClock.adjust(Duration.seconds(119));
+
+      expect((yield* manager.status({ cwd: repoDir })).pr).toBeNull();
+      expect(ghCalls.filter((call) => call.startsWith("pr list "))).toHaveLength(0);
+
+      yield* TestClock.adjust(Duration.seconds(1));
+
+      const discovered = yield* manager.status({ cwd: repoDir });
+      expect(discovered.pr?.number).toBe(413);
+      expect(ghCalls.filter((call) => call.startsWith("pr list "))).toHaveLength(1);
+    }),
+  );
+
   it.effect("status keeps the PR failure backoff through an unknown provider result", () =>
     Effect.gen(function* () {
       const repoDir = yield* makeTempDir("t3code-git-manager-");
