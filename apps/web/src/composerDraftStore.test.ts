@@ -13,6 +13,7 @@ import {
   ProviderInstanceId,
   ThreadId,
   type ModelSelection,
+  type PreviewAnnotationPayload,
   type ProviderOptionSelection,
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
@@ -613,6 +614,50 @@ describe("composerDraftStore element contexts", () => {
     // Persistence does NOT include htmlPreview / styles oversize-clamping —
     // that happens at normalization time, before the value reaches the store.
     expect(typeof entry?.htmlPreview).toBe("string");
+  });
+});
+
+describe("composerDraftStore preview annotations", () => {
+  const threadId = ThreadId.make("thread-preview-annotation");
+  const threadRef = scopeThreadRef(TEST_ENVIRONMENT_ID, threadId);
+  const annotation: PreviewAnnotationPayload = {
+    id: "annotation-1",
+    pageUrl: "http://localhost:3000/dashboard",
+    pageTitle: "Dashboard",
+    comment: "Align these cards.",
+    elements: [],
+    regions: [{ id: "region-1", rect: { x: 10, y: 20, width: 100, height: 80 } }],
+    strokes: [],
+    styleChanges: [],
+    screenshot: null,
+    createdAt: "2026-07-31T12:00:00.000Z",
+  };
+
+  beforeEach(() => {
+    resetComposerDraftStore();
+  });
+
+  it("restores persisted preview annotations on reload", () => {
+    useComposerDraftStore.getState().addPreviewAnnotation(threadRef, annotation);
+
+    const persistApi = useComposerDraftStore.persist as unknown as {
+      getOptions: () => {
+        partialize: (state: ReturnType<typeof useComposerDraftStore.getState>) => unknown;
+        merge: (
+          persistedState: unknown,
+          currentState: ReturnType<typeof useComposerDraftStore.getState>,
+        ) => ReturnType<typeof useComposerDraftStore.getState>;
+      };
+    };
+    const persistedState = persistApi.getOptions().partialize(useComposerDraftStore.getState());
+    const mergedState = persistApi
+      .getOptions()
+      .merge(persistedState, useComposerDraftStore.getInitialState());
+
+    expect(
+      mergedState.draftsByThreadKey[threadKeyFor(threadId, TEST_ENVIRONMENT_ID)]
+        ?.previewAnnotations,
+    ).toEqual([annotation]);
   });
 });
 
