@@ -5,10 +5,8 @@ import {
   createOpencodeClient,
   type Agent,
   type FilePartInput,
-  type Model,
   type OpencodeClient,
   type PermissionRuleset,
-  type ProviderListResponse,
   type QuestionAnswer,
   type QuestionRequest,
 } from "@opencode-ai/sdk/v2";
@@ -23,7 +21,6 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as P from "effect/Predicate";
 import * as Ref from "effect/Ref";
-import * as Result from "effect/Result";
 import * as Scope from "effect/Scope";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
@@ -35,6 +32,46 @@ import * as NetService from "@t3tools/shared/Net";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.fromJsonString(Schema.Unknown));
+const OpenCodeInventoryModelSchema = Schema.StructWithRest(
+  Schema.Struct({
+    id: Schema.String,
+    name: Schema.String,
+    providerID: Schema.optionalKey(Schema.String),
+    variants: Schema.optionalKey(Schema.Record(Schema.String, Schema.Unknown)),
+  }),
+  [Schema.Record(Schema.String, Schema.Unknown)],
+);
+const decodeOpenCodeCliModelExit = Schema.decodeUnknownExit(
+  Schema.fromJsonString(OpenCodeInventoryModelSchema),
+);
+const OpenCodeProviderListSchema = Schema.StructWithRest(
+  Schema.Struct({
+    all: Schema.Array(
+      Schema.StructWithRest(
+        Schema.Struct({
+          id: Schema.String,
+          name: Schema.String,
+          models: Schema.Record(Schema.String, OpenCodeInventoryModelSchema),
+        }),
+        [Schema.Record(Schema.String, Schema.Unknown)],
+      ),
+    ),
+    connected: Schema.Array(Schema.String),
+  }),
+  [Schema.Record(Schema.String, Schema.Unknown)],
+);
+const decodeOpenCodeProviderList = Schema.decodeUnknownEffect(OpenCodeProviderListSchema);
+const OpenCodeInventoryAgentSchema = Schema.StructWithRest(
+  Schema.Struct({
+    name: Schema.String,
+    mode: Schema.Literals(["subagent", "primary", "all"]),
+    hidden: Schema.optionalKey(Schema.Boolean),
+  }),
+  [Schema.Record(Schema.String, Schema.Unknown)],
+);
+const decodeOpenCodeInventoryAgents = Schema.decodeUnknownEffect(
+  Schema.Array(OpenCodeInventoryAgentSchema),
+);
 const OPENCODE_EMPTY_CONFIG_CONTENT = "{}";
 
 const OPENCODE_SERVER_READY_PREFIX = "opencode server listening";
@@ -99,9 +136,12 @@ export interface OpenCodeCommandResult {
 }
 
 export interface OpenCodeInventory {
-  readonly providerList: ProviderListResponse;
-  readonly agents: ReadonlyArray<Agent>;
+  readonly providerList: typeof OpenCodeProviderListSchema.Type;
+  readonly agents: ReadonlyArray<OpenCodeInventoryAgent>;
 }
+
+export type OpenCodeInventoryModel = typeof OpenCodeInventoryModelSchema.Type;
+export type OpenCodeInventoryAgent = typeof OpenCodeInventoryAgentSchema.Type;
 
 export interface ParsedOpenCodeModelSlug {
   readonly providerID: string;
@@ -177,13 +217,17 @@ const KNOWN_HIDDEN_AGENTS = new Set(["compaction", "summary", "title"]);
 export function parseModelsCliOutput(stdout: string): {
   readonly providers: ReadonlyMap<
     string,
-    { readonly id: string; readonly name: string; readonly models: { [key: string]: Model } }
+    {
+      readonly id: string;
+      readonly name: string;
+      readonly models: { [key: string]: OpenCodeInventoryModel };
+    }
   >;
   readonly connected: ReadonlyArray<string>;
 } {
   const providers = new Map<
     string,
-    { id: string; name: string; models: { [key: string]: Model } }
+    { id: string; name: string; models: { [key: string]: OpenCodeInventoryModel } }
   >();
   const lines = stdout.split("\n");
   let currentSlug: string | null = null;
@@ -193,8 +237,8 @@ export function parseModelsCliOutput(stdout: string): {
     if (currentSlug !== null && jsonLines.length > 0) {
       const jsonStr = jsonLines.join("\n").trim();
       if (jsonStr.length > 0) {
-        try {
-          const model = JSON.parse(jsonStr) as Model;
+        const decodedModel = decodeOpenCodeCliModelExit(jsonStr);
+        if (Exit.isSuccess(decodedModel)) {
           const separator = currentSlug.indexOf("/");
           if (separator > 0) {
             const providerID = currentSlug.slice(0, separator);
@@ -204,10 +248,8 @@ export function parseModelsCliOutput(stdout: string): {
               provider = { id: providerID, name: providerID, models: {} };
               providers.set(providerID, provider);
             }
-            provider.models[modelID] = model;
+            provider.models[modelID] = decodedModel.value;
           }
-        } catch {
-          // Skip unparseable model JSON
         }
       }
     }
@@ -636,23 +678,43 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
 
   const loadProviders = (client: OpencodeClient) =>
     runOpenCodeSdk("provider.list", () => client.provider.list()).pipe(
-      Effect.filterMapOrFail(
-        (list) =>
-          list.data
-            ? Result.succeed(list.data)
-            : Result.fail(
-                new OpenCodeRuntimeError({
-                  operation: "provider.list",
-                  detail: "OpenCode provider list was empty.",
-                }),
+      Effect.flatMap((list) =>
+        list.data
+          ? decodeOpenCodeProviderList(list.data).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new OpenCodeRuntimeError({
+                    operation: "provider.list",
+                    detail: "OpenCode provider list contained invalid model metadata.",
+                    cause,
+                  }),
               ),
-        (result) => result,
+            )
+          : Effect.fail(
+              new OpenCodeRuntimeError({
+                operation: "provider.list",
+                detail: "OpenCode provider list was empty.",
+              }),
+            ),
       ),
     );
 
   const loadAgents = (client: OpencodeClient) =>
     runOpenCodeSdk("app.agents", () => client.app.agents()).pipe(
-      Effect.map((result) => result.data ?? []),
+      Effect.flatMap((result) =>
+        result.data
+          ? decodeOpenCodeInventoryAgents(result.data).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new OpenCodeRuntimeError({
+                    operation: "app.agents",
+                    detail: "OpenCode agent list contained invalid metadata.",
+                    cause,
+                  }),
+              ),
+            )
+          : Effect.succeed([]),
+      ),
     );
 
   const loadOpenCodeInventory: OpenCodeRuntimeShape["loadOpenCodeInventory"] = (client) =>
@@ -713,16 +775,16 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
 
       const parsed = parseModelsCliOutput(modelsResult.value.stdout);
       const connected = [...parsed.connected];
-      const allProviders: ProviderListResponse["all"] = [...parsed.providers.values()].map(
-        (provider) => ({
-          id: provider.id,
-          name: provider.name,
-          source: "config" as const,
-          env: [],
-          options: {},
-          models: provider.models,
-        }),
-      );
+      const allProviders: OpenCodeInventory["providerList"]["all"] = [
+        ...parsed.providers.values(),
+      ].map((provider) => ({
+        id: provider.id,
+        name: provider.name,
+        source: "config" as const,
+        env: [],
+        options: {},
+        models: provider.models,
+      }));
 
       // Agent metadata enriches model capabilities but is not required for an
       // authoritative model inventory, so it may still degrade to an empty list.

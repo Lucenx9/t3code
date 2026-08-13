@@ -12,6 +12,7 @@ import { ServerConfig } from "../../config.ts";
 import {
   OpenCodeRuntime,
   OpenCodeRuntimeError,
+  parseModelsCliOutput,
   type OpenCodeRuntimeShape,
 } from "../opencodeRuntime.ts";
 import { checkOpenCodeProviderStatus } from "./OpenCodeProvider.ts";
@@ -226,6 +227,38 @@ it.layer(testLayer)("checkOpenCodeProviderStatus", (it) => {
       NodeAssert.equal(
         snapshot.message,
         "Failed to execute OpenCode CLI health check: opencode models failed",
+      );
+    }),
+  );
+
+  it.effect("does not crash refresh when CLI model metadata is malformed", () =>
+    Effect.gen(function* () {
+      const parsed = parseModelsCliOutput(
+        [
+          "anthropic/null-model",
+          "null",
+          "anthropic/numeric-name",
+          '{"id":"numeric-name","name":123}',
+          "anthropic/invalid-variants",
+          '{"id":"invalid-variants","name":"Invalid variants","variants":[]}',
+          "openai/gpt-4o",
+          '{"id":"gpt-4o","name":"GPT-4o"}',
+        ].join("\n"),
+      );
+      runtimeMock.state.inventory = {
+        providerList: {
+          connected: parsed.connected,
+          all: [...parsed.providers.values()],
+        },
+        agents: [],
+      };
+
+      const snapshot = yield* checkOpenCodeProviderStatus(makeOpenCodeSettings(), process.cwd());
+
+      NodeAssert.equal(snapshot.status, "ready");
+      NodeAssert.deepEqual(
+        snapshot.models.map((model) => model.slug),
+        ["openai/gpt-4o"],
       );
     }),
   );

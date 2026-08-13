@@ -79,6 +79,29 @@ describe("parseModelsCliOutput", () => {
     NodeAssert.ok(provider.models["claude-haiku-4-5"]);
   });
 
+  it.each([
+    ["null", null],
+    ["array", []],
+    ["string", "model"],
+    ["numeric-id", { id: 123, name: "Numeric ID" }],
+    ["numeric-name", { id: "numeric-name", name: 123 }],
+    ["null-variants", { id: "null-variants", name: "Null variants", variants: null }],
+    ["array-variants", { id: "array-variants", name: "Array variants", variants: [] }],
+    ["string-variants", { id: "string-variants", name: "String variants", variants: "high" }],
+  ])("skips valid JSON with malformed %s model metadata", (modelID, metadata) => {
+    const stdout = [
+      `anthropic/${modelID}`,
+      JSON.stringify(metadata),
+      "openai/gpt-4o",
+      JSON.stringify({ id: "gpt-4o", providerID: "openai", name: "GPT-4o" }),
+    ].join("\n");
+
+    const result = parseModelsCliOutput(stdout);
+    NodeAssert.deepEqual([...result.connected], ["openai"]);
+    NodeAssert.equal(result.providers.size, 1);
+    NodeAssert.deepEqual(Object.keys(result.providers.get("openai")!.models), ["gpt-4o"]);
+  });
+
   it("handles Windows-style CRLF line endings", () => {
     const stdout =
       "anthropic/claude-sonnet-4-5\r\n" +
@@ -91,37 +114,34 @@ describe("parseModelsCliOutput", () => {
   });
 
   it("handles model JSON with variants and nested fields", () => {
-    const stdout = [
-      "opencode/gpt-5.4",
-      JSON.stringify({
-        id: "gpt-5.4",
-        providerID: "opencode",
-        name: "GPT-5.4",
-        family: "gpt",
-        capabilities: {
-          temperature: true,
-          reasoning: true,
-          attachment: false,
-          toolcall: true,
-          input: { text: true, audio: false, image: false, video: false, pdf: false },
-          output: { text: true, audio: false, image: false, video: false, pdf: false },
-          interleaved: false,
-        },
-        cost: { input: 0, output: 0, cache: { read: 0, write: 0 } },
-        limit: { context: 200000, input: 160000, output: 32000 },
-        status: "active",
-        options: {},
-        headers: {},
-        release_date: "2025-01-01",
-        variants: { none: {}, low: {}, medium: {}, high: {} },
-      }),
-    ].join("\n");
+    const metadata = {
+      id: "gpt-5.4",
+      providerID: "opencode",
+      name: "GPT-5.4",
+      family: "gpt",
+      capabilities: {
+        temperature: true,
+        reasoning: true,
+        attachment: false,
+        toolcall: true,
+        input: { text: true, audio: false, image: false, video: false, pdf: false },
+        output: { text: true, audio: false, image: false, video: false, pdf: false },
+        interleaved: false,
+      },
+      cost: { input: 0, output: 0, cache: { read: 0, write: 0 } },
+      limit: { context: 200000, input: 160000, output: 32000 },
+      status: "active",
+      options: {},
+      headers: {},
+      release_date: "2025-01-01",
+      variants: { none: {}, low: {}, medium: {}, high: {} },
+    };
+    const stdout = ["opencode/gpt-5.4", JSON.stringify(metadata)].join("\n");
 
     const result = parseModelsCliOutput(stdout);
     const model = result.providers.get("opencode")!.models["gpt-5.4"]!;
     NodeAssert.ok(model);
-    NodeAssert.ok(model.capabilities);
-    NodeAssert.equal(model.capabilities!.reasoning, true);
+    NodeAssert.deepEqual(model.capabilities, metadata.capabilities);
     NodeAssert.ok(model.variants);
     NodeAssert.equal(model.variants!["medium"] !== undefined, true);
   });
