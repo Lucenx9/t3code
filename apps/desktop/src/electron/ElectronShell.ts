@@ -14,7 +14,7 @@ const REMOTE_EDITOR_PROTOCOLS = new Set(
   }),
 );
 
-const isRemoteEditorUrl = (url: URL): boolean =>
+const isRemoteEditorUrl = (url: URL) =>
   REMOTE_EDITOR_PROTOCOLS.has(url.protocol) &&
   url.host === "vscode-remote" &&
   url.pathname.startsWith("/ssh-remote+") &&
