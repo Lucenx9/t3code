@@ -46,6 +46,48 @@ it.layer(testLayer)("OpenCodeRuntime inventory", (it) => {
     }),
   );
 
+  it.effect("keeps only SDK skill metadata in inventory", () =>
+    Effect.gen(function* () {
+      const runtime = yield* OpenCodeRuntime;
+      const client = {
+        provider: {
+          list: () =>
+            Promise.resolve({
+              data: {
+                connected: ["openai"],
+                all: [],
+                default: {},
+              },
+            }),
+        },
+        app: {
+          agents: () => Promise.resolve({ data: [] }),
+          skills: () =>
+            Promise.resolve({
+              data: [
+                {
+                  name: "review",
+                  description: "Review code changes",
+                  location: "/skills/review/SKILL.md",
+                  content: "unused skill content",
+                },
+              ],
+            }),
+        },
+      } as unknown as OpencodeClient;
+
+      const inventory = yield* runtime.loadOpenCodeInventory(client);
+
+      NodeAssert.deepEqual(inventory.skills, [
+        {
+          name: "review",
+          description: "Review code changes",
+          location: "/skills/review/SKILL.md",
+        },
+      ]);
+    }),
+  );
+
   it.effect("drops oversized CLI skill output without losing the model inventory", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -101,15 +143,16 @@ it.layer(testLayer)("OpenCodeRuntime inventory", (it) => {
     }),
   );
 
-  it.effect("caps command stdout and stderr when requested", () =>
+  it.effect("caps and drains command stdout and stderr when requested", () =>
     Effect.gen(function* () {
       const runtime = yield* OpenCodeRuntime;
       const executablePath = yield* HostProcessExecutablePath;
+      const outputBytes = 2 * 1024 * 1024;
       const result = yield* runtime.runOpenCodeCommand({
         binaryPath: executablePath,
         args: [
           "-e",
-          'process.stdout.write("o".repeat(128)); process.stderr.write("e".repeat(128));',
+          `process.stdout.write("o".repeat(${outputBytes})); process.stderr.write("e".repeat(${outputBytes}));`,
         ],
         maxOutputBytes: 64,
       });

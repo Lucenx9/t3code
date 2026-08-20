@@ -708,7 +708,13 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
 
   const loadSkills = (client: OpencodeClient) =>
     runOpenCodeSdk("app.skills", () => client.app.skills()).pipe(
-      Effect.map((result) => (result.data ?? []) as ReadonlyArray<OpenCodeSkill>),
+      Effect.map((result) =>
+        (result.data ?? []).map((skill) => ({
+          name: skill.name,
+          ...(skill.description === undefined ? {} : { description: skill.description }),
+          location: skill.location,
+        })),
+      ),
       Effect.orElseSucceed((): ReadonlyArray<OpenCodeSkill> => []),
     );
 
