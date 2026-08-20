@@ -53,7 +53,10 @@ export function normalizeSemverVersion(version: string): string {
 }
 
 export function parseSemver(value: string): ParsedSemver | null {
-  const { buildMetadata } = splitSemverVersion(value);
+  const { buildMetadata, prerelease: rawPrerelease } = splitSemverVersion(value);
+  if (rawPrerelease === "") {
+    return null;
+  }
   if (buildMetadata !== undefined && !SEMVER_BUILD_METADATA.test(buildMetadata)) {
     return null;
   }

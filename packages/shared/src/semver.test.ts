@@ -69,6 +69,10 @@ describe("semver helpers", () => {
     },
   );
 
+  it.each(["1.2.3-", "1.2.3-+build.1"])("rejects an empty prerelease in %s", (version) => {
+    expect(parseSemver(version)).toBeNull();
+  });
+
   it("falls back to lexical comparison for malformed numeric segments", () => {
     expect(compareSemverVersions("1.2.3abc", "1.2.10")).toBeGreaterThan(0);
   });
