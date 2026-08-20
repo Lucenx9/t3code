@@ -62,6 +62,13 @@ describe("semver helpers", () => {
     expect(compareSemverVersions("1.2.3-alpha-beta", "1.2.3-alpha")).toBeGreaterThan(0);
   });
 
+  it.each(["1.2.3+", "1.2.3+!!!", "1.2.3+foo+bar"])(
+    "rejects malformed build metadata in %s",
+    (version) => {
+      expect(parseSemver(version)).toBeNull();
+    },
+  );
+
   it("falls back to lexical comparison for malformed numeric segments", () => {
     expect(compareSemverVersions("1.2.3abc", "1.2.10")).toBeGreaterThan(0);
   });

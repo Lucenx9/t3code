@@ -6,6 +6,7 @@ interface ParsedSemver {
 }
 
 const SEMVER_NUMBER_SEGMENT = /^\d+$/;
+const SEMVER_BUILD_METADATA = /^[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*$/;
 
 function splitSemverVersion(version: string) {
   const trimmed = version.trim();
@@ -52,6 +53,11 @@ export function normalizeSemverVersion(version: string): string {
 }
 
 export function parseSemver(value: string): ParsedSemver | null {
+  const { buildMetadata } = splitSemverVersion(value);
+  if (buildMetadata !== undefined && !SEMVER_BUILD_METADATA.test(buildMetadata)) {
+    return null;
+  }
+
   const normalized = normalizeSemverVersion(value).replace(/^v/, "");
   const { main, prerelease } = splitSemverVersion(normalized);
   const segments = main.split(".");
