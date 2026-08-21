@@ -194,17 +194,17 @@ export function surfaceShortcutActionForKey<
  * A focused editable is a typing context whether or not it has text yet: an
  * empty chat composer at rest is still where the user's next keystrokes are
  * meant to land, and claiming launcher letters from it would redirect prompts
- * into whatever surface opens. Non-editable islands marked
- * `contenteditable="false"` (chips inside the composer, standalone widgets)
- * stay shortcut-reachable.
+ * into whatever surface opens. The `:not` clause lets `closest` see past
+ * non-editable islands (`contenteditable="false"`) to an editable host around
+ * them, matching ComposerPendingUserInputPanel's typing guard.
  */
 export function surfaceShortcutTargetsTypingContext(
-  target: {
-    closest(selectors: string): { getAttribute(qualifiedName: string): string | null } | null;
-  } | null,
+  target: { closest(selectors: string): unknown } | null,
 ): boolean {
-  const editable = target?.closest("input, textarea, select, [contenteditable]") ?? null;
-  return editable != null && editable.getAttribute("contenteditable") !== "false";
+  return (
+    target?.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])') !=
+    null
+  );
 }
 
 function DisabledReasonTooltip(props: { reason: string; trigger: ReactElement }) {

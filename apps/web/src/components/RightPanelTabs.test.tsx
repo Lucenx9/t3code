@@ -172,15 +172,12 @@ describe("surface shortcuts", () => {
 });
 
 describe("surface shortcut typing contexts", () => {
-  // Selector-aware stub: closest() only answers when the requested selector
-  // list contains the matched element, like a real DOM would.
-  const makeTarget = (matches: string | null, contenteditableValue?: string | null) => ({
+  // Selector-aware stub: closest() answers only tokens the combined selector
+  // would actually match, mirroring how the browser resolves it.
+  const makeTarget = (matches: string | null) => ({
     closest(selectors: string) {
       if (matches === null || !selectors.includes(matches)) return null;
-      return {
-        getAttribute: (name: string) =>
-          name === "contenteditable" ? (contenteditableValue ?? null) : null,
-      };
+      return {};
     },
   });
 
@@ -190,18 +187,14 @@ describe("surface shortcut typing contexts", () => {
     expect(surfaceShortcutTargetsTypingContext(makeTarget("select"))).toBe(true);
     // The chat composer is a contenteditable that sits empty until a draft
     // exists; launcher letters claimed from it redirected prompts into shells.
-    expect(surfaceShortcutTargetsTypingContext(makeTarget("[contenteditable]", "true"))).toBe(true);
-    // An empty attribute value still means editable.
-    expect(surfaceShortcutTargetsTypingContext(makeTarget("[contenteditable]", ""))).toBe(true);
+    // The :not clause sees past contenteditable="false" islands to an editable
+    // host around them, so nested editors stay protected too.
+    expect(surfaceShortcutTargetsTypingContext(makeTarget("[contenteditable]"))).toBe(true);
   });
 
-  it("ignores non-editable regions and bare focus targets", () => {
+  it("claims letters when focus sits outside any editable region", () => {
     expect(surfaceShortcutTargetsTypingContext(null)).toBe(false);
     expect(surfaceShortcutTargetsTypingContext(makeTarget(null))).toBe(false);
-    // Non-editable islands inside an editable host stay shortcut-reachable.
-    expect(surfaceShortcutTargetsTypingContext(makeTarget("[contenteditable]", "false"))).toBe(
-      false,
-    );
   });
 });
 
