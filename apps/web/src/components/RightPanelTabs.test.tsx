@@ -172,22 +172,36 @@ describe("surface shortcuts", () => {
 });
 
 describe("surface shortcut typing contexts", () => {
-  const targetIn = (selector: string | null) => ({
-    closest: (selectors: string) => (selector === null ? null : { matches: selector }),
+  // Selector-aware stub: closest() only answers when the requested selector
+  // list contains the matched element, like a real DOM would.
+  const makeTarget = (matches: string | null, contenteditableValue?: string | null) => ({
+    closest(selectors: string) {
+      if (matches === null || !selectors.includes(matches)) return null;
+      return {
+        getAttribute: (name: string) =>
+          name === "contenteditable" ? (contenteditableValue ?? null) : null,
+      };
+    },
   });
 
-  it("treats form fields and every contenteditable as typing contexts", () => {
-    expect(surfaceShortcutTargetsTypingContext(targetIn("input"))).toBe(true);
-    expect(surfaceShortcutTargetsTypingContext(targetIn("textarea"))).toBe(true);
-    expect(surfaceShortcutTargetsTypingContext(targetIn("select"))).toBe(true);
+  it("treats form fields and every editable region as typing contexts", () => {
+    expect(surfaceShortcutTargetsTypingContext(makeTarget("input"))).toBe(true);
+    expect(surfaceShortcutTargetsTypingContext(makeTarget("textarea"))).toBe(true);
+    expect(surfaceShortcutTargetsTypingContext(makeTarget("select"))).toBe(true);
     // The chat composer is a contenteditable that sits empty until a draft
     // exists; launcher letters claimed from it redirected prompts into shells.
-    expect(surfaceShortcutTargetsTypingContext(targetIn("[contenteditable]"))).toBe(true);
+    expect(surfaceShortcutTargetsTypingContext(makeTarget("[contenteditable]", "true"))).toBe(true);
+    // An empty attribute value still means editable.
+    expect(surfaceShortcutTargetsTypingContext(makeTarget("[contenteditable]", ""))).toBe(true);
   });
 
-  it("claims letters when focus sits outside any editable", () => {
-    expect(surfaceShortcutTargetsTypingContext(targetIn(null))).toBe(false);
+  it("ignores non-editable regions and bare focus targets", () => {
     expect(surfaceShortcutTargetsTypingContext(null)).toBe(false);
+    expect(surfaceShortcutTargetsTypingContext(makeTarget(null))).toBe(false);
+    // Non-editable islands inside an editable host stay shortcut-reachable.
+    expect(surfaceShortcutTargetsTypingContext(makeTarget("[contenteditable]", "false"))).toBe(
+      false,
+    );
   });
 });
 
