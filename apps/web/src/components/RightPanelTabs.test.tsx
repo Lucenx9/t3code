@@ -2,7 +2,12 @@ import type { DesktopPreviewFavicon, PreviewSessionSnapshot } from "@t3tools/con
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vite-plus/test";
 
-import { RightPanelTabs, surfaceShortcutActionForKey, tabMuteMenuItem } from "./RightPanelTabs";
+import {
+  RightPanelTabs,
+  surfaceShortcutActionForKey,
+  surfaceShortcutTargetsTypingContext,
+  tabMuteMenuItem,
+} from "./RightPanelTabs";
 
 function shortcutEvent(
   key: string,
@@ -163,6 +168,26 @@ describe("surface shortcuts", () => {
     expect(
       surfaceShortcutActionForKey(actions, shortcutEvent("b", { defaultPrevented: true })),
     ).toBeNull();
+  });
+});
+
+describe("surface shortcut typing contexts", () => {
+  const targetIn = (selector: string | null) => ({
+    closest: (selectors: string) => (selector === null ? null : { matches: selector }),
+  });
+
+  it("treats form fields and every contenteditable as typing contexts", () => {
+    expect(surfaceShortcutTargetsTypingContext(targetIn("input"))).toBe(true);
+    expect(surfaceShortcutTargetsTypingContext(targetIn("textarea"))).toBe(true);
+    expect(surfaceShortcutTargetsTypingContext(targetIn("select"))).toBe(true);
+    // The chat composer is a contenteditable that sits empty until a draft
+    // exists; launcher letters claimed from it redirected prompts into shells.
+    expect(surfaceShortcutTargetsTypingContext(targetIn("[contenteditable]"))).toBe(true);
+  });
+
+  it("claims letters when focus sits outside any editable", () => {
+    expect(surfaceShortcutTargetsTypingContext(targetIn(null))).toBe(false);
+    expect(surfaceShortcutTargetsTypingContext(null)).toBe(false);
   });
 });
 
