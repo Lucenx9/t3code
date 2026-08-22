@@ -260,8 +260,9 @@ export function terminalExplicitHyperlinkRange(
         : start.y > 0 && options.rowData[start.y]?.isWrapContinuation
           ? { x: options.cols - 1, y: start.y - 1 }
           : null;
-    if (!previous || !options.hasSameHyperlink(previous.x, previous.y)) break;
+    if (!previous) break;
     scanned += 1;
+    if (!options.hasSameHyperlink(previous.x, previous.y)) break;
     start.x = previous.x;
     start.y = previous.y;
   }
@@ -272,8 +273,9 @@ export function terminalExplicitHyperlinkRange(
         : end.y + 1 < options.rows && options.rowData[end.y]?.wrapsToNext
           ? { x: 0, y: end.y + 1 }
           : null;
-    if (!next || !options.hasSameHyperlink(next.x, next.y)) break;
+    if (!next) break;
     scanned += 1;
+    if (!options.hasSameHyperlink(next.x, next.y)) break;
     end.x = next.x;
     end.y = next.y;
   }
