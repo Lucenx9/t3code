@@ -177,6 +177,33 @@ describe("terminalExplicitHyperlinkRange", () => {
     });
   });
 
+  it("counts failed probes toward the scan cap", () => {
+    const cols = 8;
+    const rowCount = 600;
+    const rowData = Array.from({ length: rowCount }, (_, index) =>
+      row({
+        wrapsToNext: index < rowCount - 1,
+        isWrapContinuation: index > 0,
+      }),
+    );
+    let probes = 0;
+    const result = terminalExplicitHyperlinkRange({ x: 3, y: 0 }, "https://t3.codes", {
+      cols,
+      rows: rowCount,
+      rowData,
+      hasSameHyperlink: (x, y) => {
+        probes += 1;
+        return !(x === 2 && y === 0);
+      },
+    });
+    expect(probes).toBe(MAX_HYPERLINK_RANGE_CELLS);
+    expect(result.start).toEqual({ x: 3, y: 0 });
+    expect(result.end).toEqual({
+      x: (3 + MAX_HYPERLINK_RANGE_CELLS - 1) % cols,
+      y: Math.floor((3 + MAX_HYPERLINK_RANGE_CELLS - 1) / cols),
+    });
+  });
+
   it("keeps oversized URIs to a single-cell range without probing neighbors", () => {
     let probes = 0;
     const result = terminalExplicitHyperlinkRange(
