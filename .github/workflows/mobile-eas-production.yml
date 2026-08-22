@@ -152,6 +152,8 @@ jobs:
           app-id: ${{ secrets.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
 
       - name: Apply manual version override
         if: steps.version_app_token.outcome == 'success'
@@ -196,9 +198,13 @@ jobs:
           git commit \
             -m "chore(mobile): bump app version to $RELEASE_VERSION" \
             -m "Co-authored-by: codex <codex@users.noreply.github.com>"
-          # One-shot credential: overrides the read-only github.token that
-          # checkout persisted, without persisting the App token anywhere.
-          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)" \
+          # One-shot credential: the leading empty value resets the header list
+          # checkout persisted (extraheader is multi-valued), so the read-only
+          # github.token never reaches github.com and the App token is not
+          # persisted anywhere.
+          git \
+            -c http.https://github.com/.extraheader= \
+            -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)" \
             push origin "HEAD:refs/heads/${GITHUB_REF_NAME}"
 
       - name: Summarize manual build version
