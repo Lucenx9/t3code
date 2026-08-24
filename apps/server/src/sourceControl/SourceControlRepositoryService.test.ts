@@ -176,9 +176,45 @@ it.effect("clones a looked-up repository into the requested destination", () =>
       assert.deepStrictEqual(cloneCalls, [
         {
           cwd: parent,
-          args: ["clone", CLONE_URLS.url, "t3code"],
+          args: ["clone", "--", CLONE_URLS.url, "t3code"],
         },
       ]);
+    }).pipe(
+      Effect.provide(
+        makeLayer({
+          git: {
+            execute: (input) =>
+              Effect.sync(() => {
+                cloneCalls.push({ cwd: input.cwd, args: input.args });
+                return processOutput();
+              }),
+          },
+        }),
+      ),
+    );
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect("passes dash-prefixed remote urls as positional arguments, not git options", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const parent = yield* fs.makeTempDirectoryScoped({
+      prefix: "t3-source-control-clone-parent-",
+    });
+    const injectionUrl = "--upload-pack=touch /tmp/pwned";
+    const cloneCalls: Array<{ cwd: string; args: ReadonlyArray<string> }> = [];
+
+    yield* Effect.gen(function* () {
+      const service = yield* SourceControlRepositoryService.SourceControlRepositoryService;
+      const result = yield* service.cloneRepository({
+        remoteUrl: injectionUrl,
+        destinationPath: `${parent}/repo`,
+      });
+
+      assert.deepStrictEqual(cloneCalls, [
+        { cwd: parent, args: ["clone", "--", injectionUrl, "repo"] },
+      ]);
+      assert.strictEqual(result.remoteUrl, injectionUrl);
     }).pipe(
       Effect.provide(
         makeLayer({
