@@ -489,7 +489,10 @@ const TYPE_TO_FOCUS_INTERACTIVE_SELECTOR = [
   '[role="tab"]',
 ].join(",");
 const TYPE_TO_FOCUS_FLOATING_LAYER_SELECTOR = [
-  '[data-slot="dialog"]',
+  '[data-slot="alert-dialog-popup"][data-open]',
+  '[data-slot="command-dialog-popup"][data-open]',
+  '[data-slot="dialog-popup"][data-open]',
+  '[data-slot="sheet-popup"][data-open]',
   '[data-slot="menu-popup"]',
   '[data-slot="select-popup"]',
   '[data-slot="popover-popup"]',
