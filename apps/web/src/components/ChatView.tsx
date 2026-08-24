@@ -493,6 +493,7 @@ const TYPE_TO_FOCUS_FLOATING_LAYER_SELECTOR = [
   '[data-slot="command-dialog-popup"][data-open]',
   '[data-slot="dialog-popup"][data-open]',
   '[data-slot="sheet-popup"][data-open]',
+  '[data-slot="sidebar"][data-mobile="true"][data-open]',
   '[data-slot="menu-popup"]',
   '[data-slot="select-popup"]',
   '[data-slot="popover-popup"]',
