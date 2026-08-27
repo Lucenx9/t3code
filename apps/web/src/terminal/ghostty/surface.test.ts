@@ -102,33 +102,53 @@ describe("terminalExplicitHyperlinkRange", () => {
     ...over,
   });
 
-  const range = (
-    cell: { x: number; y: number },
-    linked: Set<string>,
-    rowData: GhosttyRow[],
-    cols: number,
-    uri = "https://t3.codes",
-  ) =>
-    terminalExplicitHyperlinkRange(cell, uri, {
-      cols,
-      rows: rowData.length,
-      rowData,
-      hasSameHyperlink: (x, y) => linked.has(`${x},${y}`),
+  const range = (options: {
+    cell: { x: number; y: number };
+    linked: Set<string>;
+    rowData: GhosttyRow[];
+    cols: number;
+  }) =>
+    terminalExplicitHyperlinkRange(options.cell, "https://t3.codes", {
+      cols: options.cols,
+      rows: options.rowData.length,
+      rowData: options.rowData,
+      hasSameHyperlink: (x, y) => options.linked.has(`${x},${y}`),
     });
 
   it("expands over adjacent cells carrying the same hyperlink", () => {
-    expect(range({ x: 2, y: 0 }, new Set(["1,0", "2,0", "3,0"]), [row()], 5)).toEqual({
+    expect(
+      range({
+        cell: { x: 2, y: 0 },
+        linked: new Set(["1,0", "2,0", "3,0"]),
+        rowData: [row()],
+        cols: 5,
+      }),
+    ).toEqual({
       start: { x: 1, y: 0 },
       end: { x: 3, y: 0 },
     });
   });
 
   it("stops at cells without the hyperlink and at grid edges", () => {
-    expect(range({ x: 4, y: 0 }, new Set(["4,0", "5,0"]), [row()], 5)).toEqual({
+    expect(
+      range({
+        cell: { x: 4, y: 0 },
+        linked: new Set(["4,0", "5,0"]),
+        rowData: [row()],
+        cols: 5,
+      }),
+    ).toEqual({
       start: { x: 4, y: 0 },
       end: { x: 4, y: 0 },
     });
-    expect(range({ x: 1, y: 0 }, new Set(["1,0"]), [row()], 5)).toEqual({
+    expect(
+      range({
+        cell: { x: 1, y: 0 },
+        linked: new Set(["1,0"]),
+        rowData: [row()],
+        cols: 5,
+      }),
+    ).toEqual({
       start: { x: 1, y: 0 },
       end: { x: 1, y: 0 },
     });
@@ -140,11 +160,25 @@ describe("terminalExplicitHyperlinkRange", () => {
       row({ wrapsToNext: true, isWrapContinuation: true }),
       row({ isWrapContinuation: true }),
     ];
-    expect(range({ x: 3, y: 0 }, new Set(["3,0", "0,1", "1,1"]), rowData, 4)).toEqual({
+    expect(
+      range({
+        cell: { x: 3, y: 0 },
+        linked: new Set(["3,0", "0,1", "1,1"]),
+        rowData,
+        cols: 4,
+      }),
+    ).toEqual({
       start: { x: 3, y: 0 },
       end: { x: 1, y: 1 },
     });
-    expect(range({ x: 0, y: 2 }, new Set(["3,1", "0,2"]), rowData, 4)).toEqual({
+    expect(
+      range({
+        cell: { x: 0, y: 2 },
+        linked: new Set(["3,1", "0,2"]),
+        rowData,
+        cols: 4,
+      }),
+    ).toEqual({
       start: { x: 3, y: 1 },
       end: { x: 0, y: 2 },
     });
