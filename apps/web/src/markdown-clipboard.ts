@@ -138,7 +138,8 @@ function serializeListItem(item: Element, ordered: boolean, index: number): stri
 }
 
 function serializeList(list: Element, ordered: boolean): string {
-  const start = Number.parseInt(list.getAttribute("start") ?? "1", 10) || 1;
+  const parsedStart = Number.parseInt(list.getAttribute("start") ?? "1", 10);
+  const start = Number.isNaN(parsedStart) ? 1 : parsedStart;
   const items = [...list.children].filter((child) => child.tagName === "LI");
   if (items.length === 0) return "";
   return `${items.map((item, index) => serializeListItem(item, ordered, start + index)).join("\n")}\n\n`;

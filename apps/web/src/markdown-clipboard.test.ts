@@ -22,6 +22,7 @@ class FakeElement {
   constructor(
     readonly tagName: string,
     private readonly classNames: ReadonlyArray<string> = [],
+    private readonly attributes: Readonly<Record<string, string>> = {},
   ) {}
 
   get localName(): string {
@@ -32,17 +33,25 @@ class FakeElement {
     return this.childNodes.map((child) => child.textContent).join("");
   }
 
+  get children(): ReadonlyArray<FakeElement> {
+    return this.childNodes.filter((child): child is FakeElement => child instanceof FakeElement);
+  }
+
   append(...children: Array<FakeElement | FakeText>): this {
     this.childNodes.push(...children);
     return this;
   }
 
-  getAttribute(): string | null {
-    return null;
+  getAttribute(name: string): string | null {
+    return this.attributes[name] ?? null;
   }
 
-  hasAttribute(): boolean {
-    return false;
+  hasAttribute(name: string): boolean {
+    return name in this.attributes;
+  }
+
+  querySelector(): FakeElement | null {
+    return null;
   }
 }
 
@@ -91,5 +100,15 @@ describe("serializeRenderedMarkdownFragment", () => {
     const container = new FakeElement("DIV").append(code);
 
     expect(serializeRenderedMarkdownFragment(asNode(container))).toBe("first line\nsecond line");
+  });
+
+  it("preserves an ordered list that starts at zero", () => {
+    const list = new FakeElement("OL", [], { start: "0" }).append(
+      new FakeElement("LI").append(new FakeText("first")),
+      new FakeElement("LI").append(new FakeText("second")),
+    );
+    const container = new FakeElement("DIV").append(list);
+
+    expect(serializeRenderedMarkdownFragment(asNode(container))).toBe("0. first\n1. second");
   });
 });
