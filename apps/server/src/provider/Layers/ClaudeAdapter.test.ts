@@ -1029,14 +1029,8 @@ describe("ClaudeAdapterLive", () => {
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
 
-      const itemEventsFiber = yield* adapter.streamEvents.pipe(
-        Stream.filter(
-          (event) =>
-            event.type === "item.started" ||
-            event.type === "item.updated" ||
-            event.type === "item.completed",
-        ),
-        Stream.take(3),
+      const runtimeEventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.takeUntil((event) => event.type === "turn.completed"),
         Stream.runCollect,
         Effect.forkChild,
       );
@@ -1074,23 +1068,37 @@ describe("ClaudeAdapterLive", () => {
       } satisfies SDKMessage);
 
       harness.query.emit({
-        type: "user",
+        type: "stream_event",
         session_id: "sdk-session-mcp-tool",
         uuid: "00000000-0000-4000-8000-000000000002",
         parent_tool_use_id: null,
-        message: {
-          role: "user",
-          content: [
-            {
-              type: "tool_result",
-              tool_use_id: "tool-mcp-1",
-              content: "Created issue T3-123",
-            },
-          ],
+        event: {
+          type: "content_block_start",
+          index: 1,
+          content_block: {
+            type: "mcp_tool_result",
+            tool_use_id: "tool-mcp-1",
+            is_error: false,
+            content: [{ type: "text", text: "Created issue T3-123", citations: null }],
+          },
         },
       } satisfies SDKMessage);
 
-      const itemEvents = Array.from(yield* Fiber.join(itemEventsFiber));
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        errors: [],
+        session_id: "sdk-session-mcp-tool",
+        uuid: "00000000-0000-4000-8000-000000000003",
+      } as unknown as SDKMessage);
+
+      const itemEvents = Array.from(yield* Fiber.join(runtimeEventsFiber)).filter(
+        (event) =>
+          event.type === "item.started" ||
+          event.type === "item.updated" ||
+          event.type === "item.completed",
+      );
       assert.deepEqual(
         itemEvents.map((event) => {
           switch (event.type) {
@@ -1106,6 +1114,22 @@ describe("ClaudeAdapterLive", () => {
           ["item.completed", "mcp_tool_call"],
         ],
       );
+
+      const expectedToolData = {
+        toolName: "mcp__linear__create_issue",
+        input: { title: "Regression" },
+        result: {
+          type: "mcp_tool_result",
+          tool_use_id: "tool-mcp-1",
+          content: [{ type: "text", text: "Created issue T3-123", citations: null }],
+          is_error: false,
+        },
+      };
+      for (const event of itemEvents) {
+        if (event.type === "item.updated" || event.type === "item.completed") {
+          assert.deepEqual(event.payload.data, expectedToolData);
+        }
+      }
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),

@@ -106,6 +106,12 @@ type ClaudeToolResultStreamKind = Extract<
   RuntimeContentStreamKind,
   "command_output" | "file_change_output"
 >;
+interface ClaudeToolResult {
+  readonly toolUseId: string;
+  readonly block: Record<string, unknown>;
+  readonly text: string;
+  readonly isError: boolean;
+}
 type ClaudeSdkEffort = NonNullable<ClaudeQueryOptions["effort"]>;
 
 function encodeJsonStringForDiagnostics(input: unknown): string | undefined {
@@ -1483,12 +1489,7 @@ function toolResultStreamKind(itemType: CanonicalItemType): ClaudeToolResultStre
   }
 }
 
-function toolResultBlocksFromUserMessage(message: SDKMessage): Array<{
-  readonly toolUseId: string;
-  readonly block: Record<string, unknown>;
-  readonly text: string;
-  readonly isError: boolean;
-}> {
+function toolResultBlocksFromUserMessage(message: SDKMessage): Array<ClaudeToolResult> {
   if (message.type !== "user") {
     return [];
   }
@@ -1498,12 +1499,7 @@ function toolResultBlocksFromUserMessage(message: SDKMessage): Array<{
     return [];
   }
 
-  const blocks: Array<{
-    readonly toolUseId: string;
-    readonly block: Record<string, unknown>;
-    readonly text: string;
-    readonly isError: boolean;
-  }> = [];
+  const blocks: Array<ClaudeToolResult> = [];
 
   for (const entry of content) {
     if (!entry || typeof entry !== "object") {
@@ -2395,6 +2391,164 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     yield* updateResumeCursor(context);
   });
 
+  const handleToolResult = Effect.fn("handleToolResult")(function* (
+    context: ClaudeSessionContext,
+    input: {
+      readonly message: SDKMessage;
+      readonly rawMethod: string;
+      readonly toolResult: ClaudeToolResult;
+    },
+  ) {
+    const { message, rawMethod, toolResult } = input;
+    const toolEntry = Array.from(context.inFlightTools.entries()).find(
+      ([, tool]) => tool.itemId === toolResult.toolUseId,
+    );
+    if (!toolEntry) {
+      return;
+    }
+
+    const [index, tool] = toolEntry;
+    const itemStatus = toolResult.isError ? "failed" : "completed";
+    const toolUseResult = readClaudeToolUseResult(message);
+    const toolData = {
+      toolName: tool.toolName,
+      input: tool.input,
+      result: toolResult.block,
+    };
+
+    const updatedStamp = yield* makeEventStamp();
+    yield* offerRuntimeEvent({
+      type: "item.updated",
+      eventId: updatedStamp.eventId,
+      provider: PROVIDER,
+      createdAt: updatedStamp.createdAt,
+      threadId: context.session.threadId,
+      ...(context.turnState ? { turnId: asCanonicalTurnId(context.turnState.turnId) } : {}),
+      itemId: asRuntimeItemId(tool.itemId),
+      payload: {
+        itemType: tool.itemType,
+        status: toolResult.isError ? "failed" : "inProgress",
+        title: tool.title,
+        ...(tool.detail ? { detail: tool.detail } : {}),
+        ...(tool.agentId ? { agentId: tool.agentId } : {}),
+        ...(tool.parentToolUseId ? { parentToolUseId: tool.parentToolUseId } : {}),
+        data: toolData,
+      },
+      providerRefs: nativeProviderRefs(context, {
+        providerItemId: tool.itemId,
+      }),
+      raw: {
+        source: "claude.sdk.message",
+        method: rawMethod,
+        payload: message,
+      },
+    });
+
+    const streamKind = toolResultStreamKind(tool.itemType);
+    if (streamKind && toolResult.text.length > 0 && context.turnState) {
+      const deltaStamp = yield* makeEventStamp();
+      yield* offerRuntimeEvent({
+        type: "content.delta",
+        eventId: deltaStamp.eventId,
+        provider: PROVIDER,
+        createdAt: deltaStamp.createdAt,
+        threadId: context.session.threadId,
+        turnId: context.turnState.turnId,
+        itemId: asRuntimeItemId(tool.itemId),
+        payload: {
+          streamKind,
+          delta: toolResult.text,
+        },
+        providerRefs: nativeProviderRefs(context, {
+          providerItemId: tool.itemId,
+        }),
+        raw: {
+          source: "claude.sdk.message",
+          method: rawMethod,
+          payload: message,
+        },
+      });
+    }
+
+    const completedStamp = yield* makeEventStamp();
+    yield* offerRuntimeEvent({
+      type: "item.completed",
+      eventId: completedStamp.eventId,
+      provider: PROVIDER,
+      createdAt: completedStamp.createdAt,
+      threadId: context.session.threadId,
+      ...(context.turnState ? { turnId: asCanonicalTurnId(context.turnState.turnId) } : {}),
+      itemId: asRuntimeItemId(tool.itemId),
+      payload: {
+        itemType: tool.itemType,
+        status: itemStatus,
+        title: tool.title,
+        ...(tool.detail ? { detail: tool.detail } : {}),
+        ...(tool.agentId ? { agentId: tool.agentId } : {}),
+        ...(tool.parentToolUseId ? { parentToolUseId: tool.parentToolUseId } : {}),
+        data: toolData,
+      },
+      providerRefs: nativeProviderRefs(context, {
+        providerItemId: tool.itemId,
+      }),
+      raw: {
+        source: "claude.sdk.message",
+        method: rawMethod,
+        payload: message,
+      },
+    });
+
+    // The Workflow tool's result carries the run handles (runId, scriptPath,
+    // transcriptDir, sessionUrl). Attach them to the workflow's task agent so
+    // the next task.* payload advertises them to clients.
+    if (!toolResult.isError && tool.toolName.toLowerCase() === "workflow" && toolUseResult) {
+      const workflowTaskId = trimmedString(toolUseResult.taskId);
+      if (workflowTaskId) {
+        const runHandles: TaskRunHandles = {
+          ...(trimmedString(toolUseResult.runId)
+            ? { runId: trimmedString(toolUseResult.runId) }
+            : {}),
+          ...(trimmedString(toolUseResult.scriptPath)
+            ? { scriptPath: trimmedString(toolUseResult.scriptPath) }
+            : {}),
+          ...(trimmedString(toolUseResult.transcriptDir)
+            ? { transcriptDir: trimmedString(toolUseResult.transcriptDir) }
+            : {}),
+          ...(sanitizeSessionUrl(toolUseResult.sessionUrl)
+            ? { sessionUrl: sanitizeSessionUrl(toolUseResult.sessionUrl) }
+            : {}),
+        };
+        const existing = context.taskAgents.get(workflowTaskId);
+        context.taskAgents.set(workflowTaskId, {
+          taskId: workflowTaskId,
+          toolUseId: existing?.toolUseId ?? tool.itemId,
+          description: existing?.description,
+          subagentType: existing?.subagentType,
+          taskType: existing?.taskType ?? "local_workflow",
+          workflowName: existing?.workflowName,
+          skipTranscript: existing?.skipTranscript ?? false,
+          runHandles,
+          owningAgentId: existing?.owningAgentId,
+          model: existing?.model,
+          effort: existing?.effort,
+        });
+      }
+    }
+
+    if (
+      !toolResult.isError &&
+      applyClaudeTaskToolResult(context.claudeTasks, tool, toolUseResult)
+    ) {
+      yield* emitClaudeTaskPlanUpdated(context, {
+        toolUseId: tool.itemId,
+        rawMethod,
+        rawPayload: message,
+      });
+    }
+
+    context.inFlightTools.delete(index);
+  });
+
   const handleStreamEvent = Effect.fn("handleStreamEvent")(function* (
     context: ClaudeSessionContext,
     message: SDKMessage,
@@ -2422,7 +2576,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         event.type === "content_block_start" &&
         event.content_block.type !== "tool_use" &&
         event.content_block.type !== "server_tool_use" &&
-        event.content_block.type !== "mcp_tool_use";
+        event.content_block.type !== "mcp_tool_use" &&
+        event.content_block.type !== "mcp_tool_result";
       const dropDelta =
         event.type === "content_block_delta" &&
         (event.delta.type === "text_delta" || event.delta.type === "thinking_delta");
@@ -2604,6 +2759,24 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
     if (event.type === "content_block_start") {
       const { index, content_block: block } = event;
+      if (block.type === "mcp_tool_result") {
+        yield* handleToolResult(context, {
+          message,
+          rawMethod: "claude/stream_event/content_block_start/mcp_tool_result",
+          toolResult: {
+            toolUseId: block.tool_use_id,
+            block: {
+              type: block.type,
+              tool_use_id: block.tool_use_id,
+              content: block.content,
+              is_error: block.is_error,
+            },
+            text: extractTextContent(block.content),
+            isError: block.is_error,
+          },
+        });
+        return;
+      }
       if (block.type === "text") {
         yield* ensureAssistantTextBlock(context, index, {
           fallbackText: extractContentBlockText(block),
@@ -2716,153 +2889,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     }
 
     for (const toolResult of toolResultBlocksFromUserMessage(message)) {
-      const toolEntry = Array.from(context.inFlightTools.entries()).find(
-        ([, tool]) => tool.itemId === toolResult.toolUseId,
-      );
-      if (!toolEntry) {
-        continue;
-      }
-
-      const [index, tool] = toolEntry;
-      const itemStatus = toolResult.isError ? "failed" : "completed";
-      const toolUseResult = readClaudeToolUseResult(message);
-      const toolData = {
-        toolName: tool.toolName,
-        input: tool.input,
-        result: toolResult.block,
-      };
-
-      const updatedStamp = yield* makeEventStamp();
-      yield* offerRuntimeEvent({
-        type: "item.updated",
-        eventId: updatedStamp.eventId,
-        provider: PROVIDER,
-        createdAt: updatedStamp.createdAt,
-        threadId: context.session.threadId,
-        ...(context.turnState ? { turnId: asCanonicalTurnId(context.turnState.turnId) } : {}),
-        itemId: asRuntimeItemId(tool.itemId),
-        payload: {
-          itemType: tool.itemType,
-          status: toolResult.isError ? "failed" : "inProgress",
-          title: tool.title,
-          ...(tool.detail ? { detail: tool.detail } : {}),
-          ...(tool.agentId ? { agentId: tool.agentId } : {}),
-          ...(tool.parentToolUseId ? { parentToolUseId: tool.parentToolUseId } : {}),
-          data: toolData,
-        },
-        providerRefs: nativeProviderRefs(context, {
-          providerItemId: tool.itemId,
-        }),
-        raw: {
-          source: "claude.sdk.message",
-          method: "claude/user",
-          payload: message,
-        },
+      yield* handleToolResult(context, {
+        message,
+        rawMethod: "claude/user",
+        toolResult,
       });
-
-      const streamKind = toolResultStreamKind(tool.itemType);
-      if (streamKind && toolResult.text.length > 0 && context.turnState) {
-        const deltaStamp = yield* makeEventStamp();
-        yield* offerRuntimeEvent({
-          type: "content.delta",
-          eventId: deltaStamp.eventId,
-          provider: PROVIDER,
-          createdAt: deltaStamp.createdAt,
-          threadId: context.session.threadId,
-          turnId: context.turnState.turnId,
-          itemId: asRuntimeItemId(tool.itemId),
-          payload: {
-            streamKind,
-            delta: toolResult.text,
-          },
-          providerRefs: nativeProviderRefs(context, {
-            providerItemId: tool.itemId,
-          }),
-          raw: {
-            source: "claude.sdk.message",
-            method: "claude/user",
-            payload: message,
-          },
-        });
-      }
-
-      const completedStamp = yield* makeEventStamp();
-      yield* offerRuntimeEvent({
-        type: "item.completed",
-        eventId: completedStamp.eventId,
-        provider: PROVIDER,
-        createdAt: completedStamp.createdAt,
-        threadId: context.session.threadId,
-        ...(context.turnState ? { turnId: asCanonicalTurnId(context.turnState.turnId) } : {}),
-        itemId: asRuntimeItemId(tool.itemId),
-        payload: {
-          itemType: tool.itemType,
-          status: itemStatus,
-          title: tool.title,
-          ...(tool.detail ? { detail: tool.detail } : {}),
-          ...(tool.agentId ? { agentId: tool.agentId } : {}),
-          ...(tool.parentToolUseId ? { parentToolUseId: tool.parentToolUseId } : {}),
-          data: toolData,
-        },
-        providerRefs: nativeProviderRefs(context, {
-          providerItemId: tool.itemId,
-        }),
-        raw: {
-          source: "claude.sdk.message",
-          method: "claude/user",
-          payload: message,
-        },
-      });
-
-      // The Workflow tool's result carries the run handles (runId, scriptPath,
-      // transcriptDir, sessionUrl). Attach them to the workflow's task agent so
-      // the next task.* payload advertises them to clients.
-      if (!toolResult.isError && tool.toolName.toLowerCase() === "workflow" && toolUseResult) {
-        const workflowTaskId = trimmedString(toolUseResult.taskId);
-        if (workflowTaskId) {
-          const runHandles: TaskRunHandles = {
-            ...(trimmedString(toolUseResult.runId)
-              ? { runId: trimmedString(toolUseResult.runId) }
-              : {}),
-            ...(trimmedString(toolUseResult.scriptPath)
-              ? { scriptPath: trimmedString(toolUseResult.scriptPath) }
-              : {}),
-            ...(trimmedString(toolUseResult.transcriptDir)
-              ? { transcriptDir: trimmedString(toolUseResult.transcriptDir) }
-              : {}),
-            ...(sanitizeSessionUrl(toolUseResult.sessionUrl)
-              ? { sessionUrl: sanitizeSessionUrl(toolUseResult.sessionUrl) }
-              : {}),
-          };
-          const existing = context.taskAgents.get(workflowTaskId);
-          context.taskAgents.set(workflowTaskId, {
-            taskId: workflowTaskId,
-            toolUseId: existing?.toolUseId ?? tool.itemId,
-            description: existing?.description,
-            subagentType: existing?.subagentType,
-            taskType: existing?.taskType ?? "local_workflow",
-            workflowName: existing?.workflowName,
-            skipTranscript: existing?.skipTranscript ?? false,
-            runHandles,
-            owningAgentId: existing?.owningAgentId,
-            model: existing?.model,
-            effort: existing?.effort,
-          });
-        }
-      }
-
-      if (
-        !toolResult.isError &&
-        applyClaudeTaskToolResult(context.claudeTasks, tool, toolUseResult)
-      ) {
-        yield* emitClaudeTaskPlanUpdated(context, {
-          toolUseId: tool.itemId,
-          rawMethod: "claude/user",
-          rawPayload: message,
-        });
-      }
-
-      context.inFlightTools.delete(index);
     }
   });
 
