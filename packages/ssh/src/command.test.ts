@@ -12,6 +12,7 @@ import { ChildProcessSpawner } from "effect/unstable/process";
 
 import {
   baseSshArgs,
+  collectProcessOutput,
   getLastNonEmptyOutputLine,
   parseSshResolveOutput,
   resolveRemoteT3CliPackageSpec,
@@ -144,6 +145,25 @@ describe("ssh command", () => {
       );
     }),
   );
+
+  it.effect("bounds process output while preserving its valid tail", () => {
+    const outputLimitBytes = 1024 * 1024;
+    const truncationMarker = "[Earlier SSH output truncated]\n\n";
+    const finalLine = '{"credential":"pairing-token"}\n';
+    const retainedAscii = `${"x".repeat(outputLimitBytes - finalLine.length - 1)}${finalLine}`;
+    const stream = Stream.make(
+      encoder.encode(`é${retainedAscii.slice(0, -finalLine.length)}`),
+      encoder.encode(finalLine),
+    );
+
+    return Effect.gen(function* () {
+      const output = yield* collectProcessOutput(stream);
+
+      assert.isTrue(output.startsWith(truncationMarker));
+      assert.isFalse(output.includes("�"));
+      assert.isTrue(output.endsWith(retainedAscii));
+    });
+  });
 
   it.effect("includes stdout in non-zero command failures when stderr is empty", () => {
     const spawner = ChildProcessSpawner.make(() =>

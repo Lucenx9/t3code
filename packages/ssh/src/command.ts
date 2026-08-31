@@ -16,6 +16,8 @@ import { SshCommandError, SshInvalidTargetError } from "./errors.ts";
 
 const PUBLISHABLE_T3_VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u;
 const DEFAULT_SSH_COMMAND_TIMEOUT_MS = 60_000;
+const MAX_SSH_PROCESS_OUTPUT_BYTES = 1024 * 1024;
+const SSH_PROCESS_OUTPUT_TRUNCATED_MARKER = "[Earlier SSH output truncated]\n\n";
 const MAX_SSH_ERROR_OUTPUT_LENGTH = 4_000;
 
 /**
@@ -33,6 +35,13 @@ const encoder = new TextEncoder();
 export interface SshCommandResult {
   readonly stdout: string;
   readonly stderr: string;
+}
+
+interface ProcessOutputState {
+  readonly buffer: Uint8Array;
+  readonly length: number;
+  readonly writeOffset: number;
+  readonly truncated: boolean;
 }
 
 export interface RunSshCommandOptions extends SshAuthOptions {
@@ -122,15 +131,71 @@ export function getLastNonEmptyOutputLine(stdout: string): string | null {
   );
 }
 
+/** Keep the latest SSH diagnostics and machine-readable result while continuing to drain the process. */
 export const collectProcessOutput = <E>(
   stream: Stream.Stream<Uint8Array, E>,
 ): Effect.Effect<string, E> =>
   stream.pipe(
-    Stream.decodeText(),
     Stream.runFold(
-      () => "",
-      (acc, chunk) => acc + chunk,
+      (): ProcessOutputState => ({
+        buffer: new Uint8Array(MAX_SSH_PROCESS_OUTPUT_BYTES),
+        length: 0,
+        writeOffset: 0,
+        truncated: false,
+      }),
+      (state, chunk): ProcessOutputState => {
+        if (chunk.byteLength >= MAX_SSH_PROCESS_OUTPUT_BYTES) {
+          state.buffer.set(chunk.subarray(chunk.byteLength - MAX_SSH_PROCESS_OUTPUT_BYTES));
+          return {
+            buffer: state.buffer,
+            length: MAX_SSH_PROCESS_OUTPUT_BYTES,
+            writeOffset: 0,
+            truncated:
+              state.truncated ||
+              state.length > 0 ||
+              chunk.byteLength > MAX_SSH_PROCESS_OUTPUT_BYTES,
+          };
+        }
+
+        const firstPartLength = Math.min(
+          chunk.byteLength,
+          MAX_SSH_PROCESS_OUTPUT_BYTES - state.writeOffset,
+        );
+        state.buffer.set(chunk.subarray(0, firstPartLength), state.writeOffset);
+        if (firstPartLength < chunk.byteLength) {
+          state.buffer.set(chunk.subarray(firstPartLength));
+        }
+        const nextLength = state.length + chunk.byteLength;
+        return {
+          buffer: state.buffer,
+          length: Math.min(nextLength, MAX_SSH_PROCESS_OUTPUT_BYTES),
+          writeOffset: (state.writeOffset + chunk.byteLength) % MAX_SSH_PROCESS_OUTPUT_BYTES,
+          truncated: state.truncated || nextLength > MAX_SSH_PROCESS_OUTPUT_BYTES,
+        };
+      },
     ),
+    Effect.map((state) => {
+      let retainedBytes: Uint8Array;
+      if (state.length < MAX_SSH_PROCESS_OUTPUT_BYTES || state.writeOffset === 0) {
+        retainedBytes = state.buffer.subarray(0, state.length);
+      } else {
+        retainedBytes = new Uint8Array(MAX_SSH_PROCESS_OUTPUT_BYTES);
+        const firstPart = state.buffer.subarray(state.writeOffset);
+        retainedBytes.set(firstPart);
+        retainedBytes.set(state.buffer.subarray(0, state.writeOffset), firstPart.byteLength);
+      }
+
+      let retainedStart = 0;
+      while (state.truncated && retainedStart < retainedBytes.byteLength) {
+        const byte = retainedBytes[retainedStart];
+        if (byte === undefined || (byte & 0xc0) !== 0x80) {
+          break;
+        }
+        retainedStart += 1;
+      }
+      const output = new TextDecoder().decode(retainedBytes.subarray(retainedStart));
+      return state.truncated ? `${SSH_PROCESS_OUTPUT_TRUNCATED_MARKER}${output}` : output;
+    }),
   );
 
 function redactSshErrorOutput(output: string): string {
