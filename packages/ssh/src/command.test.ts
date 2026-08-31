@@ -165,6 +165,20 @@ describe("ssh command", () => {
     });
   });
 
+  it.effect("keeps the tail of a single oversized process chunk", () => {
+    const outputLimitBytes = 1024 * 1024;
+    const truncationMarker = "[Earlier SSH output truncated]\n\n";
+    const finalLine = '{"credential":"pairing-token"}\n';
+    const retainedTail = `${"x".repeat(outputLimitBytes - finalLine.length)}${finalLine}`;
+    const stream = Stream.make(encoder.encode(`discarded${retainedTail}`));
+
+    return Effect.gen(function* () {
+      const output = yield* collectProcessOutput(stream);
+
+      assert.equal(output, `${truncationMarker}${retainedTail}`);
+    });
+  });
+
   it.effect("includes stdout in non-zero command failures when stderr is empty", () => {
     const spawner = ChildProcessSpawner.make(() =>
       Effect.succeed(makeFailedProcess({ stdout: "Pairing token creation failed\n" })),

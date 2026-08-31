@@ -138,16 +138,20 @@ export const collectProcessOutput = <E>(
   stream.pipe(
     Stream.runFold(
       (): ProcessOutputState => ({
-        buffer: new Uint8Array(MAX_SSH_PROCESS_OUTPUT_BYTES),
+        buffer: new Uint8Array(0),
         length: 0,
         writeOffset: 0,
         truncated: false,
       }),
       (state, chunk): ProcessOutputState => {
         if (chunk.byteLength >= MAX_SSH_PROCESS_OUTPUT_BYTES) {
-          state.buffer.set(chunk.subarray(chunk.byteLength - MAX_SSH_PROCESS_OUTPUT_BYTES));
+          const buffer =
+            state.buffer.byteLength === MAX_SSH_PROCESS_OUTPUT_BYTES
+              ? state.buffer
+              : new Uint8Array(MAX_SSH_PROCESS_OUTPUT_BYTES);
+          buffer.set(chunk.subarray(chunk.byteLength - MAX_SSH_PROCESS_OUTPUT_BYTES));
           return {
-            buffer: state.buffer,
+            buffer,
             length: MAX_SSH_PROCESS_OUTPUT_BYTES,
             writeOffset: 0,
             truncated:
@@ -157,18 +161,32 @@ export const collectProcessOutput = <E>(
           };
         }
 
+        const nextLength = state.length + chunk.byteLength;
+        const retainedLength = Math.min(nextLength, MAX_SSH_PROCESS_OUTPUT_BYTES);
+        let buffer = state.buffer;
+        if (buffer.byteLength < retainedLength) {
+          const nextCapacity = Math.min(
+            MAX_SSH_PROCESS_OUTPUT_BYTES,
+            Math.max(
+              retainedLength,
+              buffer.byteLength === 0 ? chunk.byteLength : buffer.byteLength * 2,
+            ),
+          );
+          buffer = new Uint8Array(nextCapacity);
+          buffer.set(state.buffer.subarray(0, state.length));
+        }
+
         const firstPartLength = Math.min(
           chunk.byteLength,
           MAX_SSH_PROCESS_OUTPUT_BYTES - state.writeOffset,
         );
-        state.buffer.set(chunk.subarray(0, firstPartLength), state.writeOffset);
+        buffer.set(chunk.subarray(0, firstPartLength), state.writeOffset);
         if (firstPartLength < chunk.byteLength) {
-          state.buffer.set(chunk.subarray(firstPartLength));
+          buffer.set(chunk.subarray(firstPartLength));
         }
-        const nextLength = state.length + chunk.byteLength;
         return {
-          buffer: state.buffer,
-          length: Math.min(nextLength, MAX_SSH_PROCESS_OUTPUT_BYTES),
+          buffer,
+          length: retainedLength,
           writeOffset: (state.writeOffset + chunk.byteLength) % MAX_SSH_PROCESS_OUTPUT_BYTES,
           truncated: state.truncated || nextLength > MAX_SSH_PROCESS_OUTPUT_BYTES,
         };
