@@ -2619,7 +2619,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       }
 
       const toolName = block.name;
-      const itemType = classifyToolItemType(toolName);
+      const itemType =
+        block.type === "mcp_tool_use" ? "mcp_tool_call" : classifyToolItemType(toolName);
       const toolInput =
         typeof block.input === "object" && block.input !== null
           ? (block.input as Record<string, unknown>)

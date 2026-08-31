@@ -1024,6 +1024,94 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("keeps native MCP classification through tool completion", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const itemEventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter(
+          (event) =>
+            event.type === "item.started" ||
+            event.type === "item.updated" ||
+            event.type === "item.completed",
+        ),
+        Stream.take(3),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "create an issue",
+        attachments: [],
+      });
+
+      harness.query.emit({
+        type: "stream_event",
+        session_id: "sdk-session-mcp-tool",
+        uuid: "00000000-0000-4000-8000-000000000001",
+        parent_tool_use_id: null,
+        event: {
+          type: "content_block_start",
+          index: 0,
+          content_block: {
+            type: "mcp_tool_use",
+            id: "tool-mcp-1",
+            name: "mcp__linear__create_issue",
+            server_name: "linear",
+            input: {
+              title: "Regression",
+            },
+          },
+        },
+      } satisfies SDKMessage);
+
+      harness.query.emit({
+        type: "user",
+        session_id: "sdk-session-mcp-tool",
+        uuid: "00000000-0000-4000-8000-000000000002",
+        parent_tool_use_id: null,
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "tool-mcp-1",
+              content: "Created issue T3-123",
+            },
+          ],
+        },
+      } satisfies SDKMessage);
+
+      const itemEvents = Array.from(yield* Fiber.join(itemEventsFiber));
+      assert.deepEqual(
+        itemEvents.map((event) => {
+          switch (event.type) {
+            case "item.started":
+            case "item.updated":
+            case "item.completed":
+              return [event.type, event.payload.itemType];
+          }
+        }),
+        [
+          ["item.started", "mcp_tool_call"],
+          ["item.updated", "mcp_tool_call"],
+          ["item.completed", "mcp_tool_call"],
+        ],
+      );
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("does not emit turn.completed for a result with no active turn", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
