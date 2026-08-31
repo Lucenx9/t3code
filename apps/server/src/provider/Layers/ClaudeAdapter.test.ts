@@ -1115,19 +1115,29 @@ describe("ClaudeAdapterLive", () => {
         ],
       );
 
-      const expectedToolData = {
-        toolName: "mcp__linear__create_issue",
-        input: { title: "Regression" },
-        result: {
-          type: "mcp_tool_result",
-          tool_use_id: "tool-mcp-1",
-          content: [{ type: "text", text: "Created issue T3-123", citations: null }],
-          is_error: false,
-        },
+      const expectedToolItem = {
+        type: "mcpToolCall",
+        id: "tool-mcp-1",
+        server: "linear",
+        tool: "mcp__linear__create_issue",
+        arguments: { title: "Regression" },
       };
       for (const event of itemEvents) {
+        if (event.type === "item.started") {
+          assert.deepEqual(event.payload.data, { item: expectedToolItem });
+        }
         if (event.type === "item.updated" || event.type === "item.completed") {
-          assert.deepEqual(event.payload.data, expectedToolData);
+          assert.deepEqual(event.payload.data, {
+            item: {
+              ...expectedToolItem,
+              result: {
+                type: "mcp_tool_result",
+                tool_use_id: "tool-mcp-1",
+                content: [{ type: "text", text: "Created issue T3-123", citations: null }],
+                is_error: false,
+              },
+            },
+          });
         }
       }
     }).pipe(

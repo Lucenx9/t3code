@@ -212,6 +212,7 @@ interface ToolInFlight {
   readonly itemId: string;
   readonly itemType: CanonicalItemType;
   readonly toolName: string;
+  readonly mcpServerName?: string;
   readonly title: string;
   readonly detail?: string;
   readonly input: Record<string, unknown>;
@@ -220,6 +221,31 @@ interface ToolInFlight {
   /** Owning agent when this tool ran inside a subagent (see attribution note). */
   readonly agentId?: string;
   readonly parentToolUseId?: string;
+}
+
+function toolLifecycleData(input: {
+  readonly tool: ToolInFlight;
+  readonly result?: Record<string, unknown>;
+}): Record<string, unknown> {
+  const { tool, result } = input;
+  if (tool.itemType !== "mcp_tool_call") {
+    return {
+      toolName: tool.toolName,
+      input: tool.input,
+      ...(result !== undefined ? { result } : {}),
+    };
+  }
+
+  return {
+    item: {
+      type: "mcpToolCall",
+      id: tool.itemId,
+      ...(tool.mcpServerName ? { server: tool.mcpServerName } : {}),
+      tool: tool.toolName,
+      arguments: tool.input,
+      ...(result !== undefined ? { result } : {}),
+    },
+  };
 }
 
 interface ClaudeTaskState {
@@ -2321,10 +2347,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           status: status === "completed" ? "completed" : "failed",
           title: tool.title,
           ...(tool.detail ? { detail: tool.detail } : {}),
-          data: {
-            toolName: tool.toolName,
-            input: tool.input,
-          },
+          data: toolLifecycleData({ tool }),
         },
         providerRefs: nativeProviderRefs(context, {
           providerItemId: tool.itemId,
@@ -2410,11 +2433,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     const [index, tool] = toolEntry;
     const itemStatus = toolResult.isError ? "failed" : "completed";
     const toolUseResult = readClaudeToolUseResult(message);
-    const toolData = {
-      toolName: tool.toolName,
-      input: tool.input,
-      result: toolResult.block,
-    };
+    const toolData = toolLifecycleData({ tool, result: toolResult.block });
 
     const updatedStamp = yield* makeEventStamp();
     yield* offerRuntimeEvent({
@@ -2715,10 +2734,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             ...(nextTool.detail ? { detail: nextTool.detail } : {}),
             ...(nextTool.agentId ? { agentId: nextTool.agentId } : {}),
             ...(nextTool.parentToolUseId ? { parentToolUseId: nextTool.parentToolUseId } : {}),
-            data: {
-              toolName: nextTool.toolName,
-              input: nextTool.input,
-            },
+            data: toolLifecycleData({ tool: nextTool }),
           },
           providerRefs: nativeProviderRefs(context, {
             providerItemId: nextTool.itemId,
@@ -2815,6 +2831,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         itemId,
         itemType,
         toolName,
+        ...(block.type === "mcp_tool_use" ? { mcpServerName: block.server_name } : {}),
         title: titleForTool(itemType),
         detail,
         input: toolInput,
@@ -2841,10 +2858,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           ...(tool.detail ? { detail: tool.detail } : {}),
           ...(tool.agentId ? { agentId: tool.agentId } : {}),
           ...(tool.parentToolUseId ? { parentToolUseId: tool.parentToolUseId } : {}),
-          data: {
-            toolName: tool.toolName,
-            input: toolInput,
-          },
+          data: toolLifecycleData({ tool }),
         },
         providerRefs: nativeProviderRefs(context, {
           providerItemId: tool.itemId,
