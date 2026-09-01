@@ -84,6 +84,15 @@ const makeRunningProcess = (onKill: () => void) => {
   });
 };
 
+const makeDelayedKillRunningProcess = (beforeKill: Effect.Effect<void>, onKill: () => void) => {
+  const process = makeRunningProcess(onKill);
+  return {
+    ...process,
+    kill: (options: Parameters<typeof process.kill>[0]) =>
+      beforeKill.pipe(Effect.andThen(process.kill(options))),
+  };
+};
+
 const testHttpClient = HttpClient.make((request) =>
   Effect.succeed(HttpClientResponse.fromWeb(request, new Response("", { status: 200 }))),
 );
@@ -390,7 +399,7 @@ describe("ssh tunnel scripts", () => {
     }).pipe(Effect.provide(processLayer));
   });
 
-  it.effect("keeps remote state identity stable when an alias resolution changes", () => {
+  it.effect("keeps the remote server when an alias port changes", () => {
     const requestedTarget = {
       alias: "devbox",
       hostname: "devbox",
@@ -398,9 +407,9 @@ describe("ssh tunnel scripts", () => {
       port: null,
     } as const;
     const resolutions = [
-      { hostname: "first.example.test", port: 2222 },
-      { hostname: "second.example.test", port: 3333 },
-      { hostname: "third.example.test", port: 4444 },
+      { hostname: "devbox.example.test", port: 2222 },
+      { hostname: "devbox.example.test", port: 3333 },
+      { hostname: "devbox.example.test", port: 4444 },
     ] as const;
     const spawnedCommands: Array<ReadonlyArray<string>> = [];
     let resolutionIndex = 0;
@@ -456,9 +465,9 @@ describe("ssh tunnel scripts", () => {
       const firstLaunch = launchCommands[0];
       const secondLaunch = launchCommands[1];
 
-      assert.equal(first.target.hostname, "first.example.test");
+      assert.equal(first.target.hostname, "devbox.example.test");
       assert.equal(first.target.port, 2222);
-      assert.equal(second.target.hostname, "second.example.test");
+      assert.equal(second.target.hostname, "devbox.example.test");
       assert.equal(second.target.port, 3333);
       assert.isDefined(firstLaunch);
       assert.isDefined(secondLaunch);
@@ -474,12 +483,176 @@ describe("ssh tunnel scripts", () => {
         (args) => args.includes("sh") && !args.includes("--"),
       );
       assert.isDefined(stopCommand);
-      assert.include(stopCommand, "HostName=second.example.test");
+      assert.include(stopCommand, "HostName=devbox.example.test");
       assert.include(stopCommand, "chosen-user@devbox");
       assert.equal(tunnelKillCount, 2);
       assert.equal(stopCommandCount, 1);
     }).pipe(Effect.provide(layer), Effect.scoped);
   });
+
+  it.effect("stops the previous remote server when an alias changes host or user", () => {
+    const requestedTarget = {
+      alias: "devbox",
+      hostname: "devbox",
+      username: null,
+      port: null,
+    } as const;
+    const resolutions = [
+      { hostname: "first.example.test", username: "first-user" },
+      { hostname: "first.example.test", username: "second-user" },
+      { hostname: "second.example.test", username: "second-user" },
+      { hostname: "third.example.test", username: "third-user" },
+    ] as const;
+    const spawnedCommands: Array<ReadonlyArray<string>> = [];
+    let resolutionIndex = 0;
+    let tunnelKillCount = 0;
+    const spawner = ChildProcessSpawner.make((command) =>
+      Effect.sync(() => {
+        const args = commandArgs(command);
+        spawnedCommands.push(args);
+        if (args.includes("-G")) {
+          const resolution = resolutions[Math.min(resolutionIndex, resolutions.length - 1)];
+          resolutionIndex += 1;
+          assert.isDefined(resolution);
+          return makeSuccessfulProcess(
+            [
+              `hostname ${resolution.hostname}`,
+              `user ${resolution.username}`,
+              "port 2222",
+              "",
+            ].join("\n"),
+          );
+        }
+        if (args.includes("-N")) {
+          return makeRunningProcess(() => {
+            tunnelKillCount += 1;
+          });
+        }
+        if (args.includes("sh") && args.includes("--")) {
+          return makeSuccessfulProcess('{"remotePort":3773}\n');
+        }
+        return makeSuccessfulProcess('{"stopped":true}\n');
+      }),
+    );
+    const layer = Layer.mergeAll(
+      NodeServices.layer,
+      Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner),
+      Layer.succeed(HttpClient.HttpClient, testHttpClient),
+      Layer.succeed(NetService.NetService, testNetService),
+      SshPasswordPrompt.disabledLayer,
+      SshEnvironmentManager.layer(),
+    );
+
+    return Effect.gen(function* () {
+      const manager = yield* SshEnvironmentManager;
+      yield* manager.ensureEnvironment(requestedTarget);
+      yield* manager.ensureEnvironment(requestedTarget);
+      yield* manager.ensureEnvironment(requestedTarget);
+      yield* manager.disconnectEnvironment(requestedTarget);
+
+      const stopCommands = spawnedCommands.filter(
+        (args) => args.includes("sh") && !args.includes("--"),
+      );
+      const firstStop = stopCommands[0];
+      const secondStop = stopCommands[1];
+      const finalStop = stopCommands[2];
+      assert.isDefined(firstStop);
+      assert.isDefined(secondStop);
+      assert.isDefined(finalStop);
+      assert.include(firstStop, "HostName=first.example.test");
+      assert.include(firstStop, "first-user@devbox");
+      assert.include(secondStop, "HostName=first.example.test");
+      assert.include(secondStop, "second-user@devbox");
+      assert.include(finalStop, "HostName=second.example.test");
+      assert.include(finalStop, "second-user@devbox");
+      assert.equal(tunnelKillCount, 3);
+    }).pipe(Effect.provide(layer), Effect.scoped);
+  });
+
+  it.effect("finishes local tunnel cleanup when replacement is interrupted", () =>
+    Effect.gen(function* () {
+      const killStarted = yield* Deferred.make<void>();
+      const allowKill = yield* Deferred.make<void>();
+      const requestedTarget = {
+        alias: "devbox",
+        hostname: "devbox",
+        username: "chosen-user",
+        port: null,
+      } as const;
+      const resolutions = [
+        { hostname: "devbox.example.test", port: 2222 },
+        { hostname: "devbox.example.test", port: 3333 },
+      ] as const;
+      let resolutionIndex = 0;
+      let tunnelCount = 0;
+      let tunnelKillCount = 0;
+      const spawner = ChildProcessSpawner.make((command) =>
+        Effect.sync(() => {
+          const args = commandArgs(command);
+          if (args.includes("-G")) {
+            const resolution = resolutions[Math.min(resolutionIndex, resolutions.length - 1)];
+            resolutionIndex += 1;
+            assert.isDefined(resolution);
+            return makeSuccessfulProcess(
+              [
+                `hostname ${resolution.hostname}`,
+                "user config-user",
+                `port ${resolution.port}`,
+                "",
+              ].join("\n"),
+            );
+          }
+          if (args.includes("-N")) {
+            tunnelCount += 1;
+            return tunnelCount === 1
+              ? makeDelayedKillRunningProcess(
+                  Deferred.succeed(killStarted, undefined).pipe(
+                    Effect.andThen(Deferred.await(allowKill)),
+                  ),
+                  () => {
+                    tunnelKillCount += 1;
+                  },
+                )
+              : makeRunningProcess(() => {
+                  tunnelKillCount += 1;
+                });
+          }
+          if (args.includes("sh") && args.includes("--")) {
+            return makeSuccessfulProcess('{"remotePort":3773}\n');
+          }
+          return makeSuccessfulProcess('{"stopped":true}\n');
+        }),
+      );
+      const layer = Layer.mergeAll(
+        NodeServices.layer,
+        Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        Layer.succeed(HttpClient.HttpClient, testHttpClient),
+        Layer.succeed(NetService.NetService, testNetService),
+        SshPasswordPrompt.disabledLayer,
+        SshEnvironmentManager.layer(),
+      );
+
+      yield* Effect.gen(function* () {
+        const manager = yield* SshEnvironmentManager;
+        yield* manager.ensureEnvironment(requestedTarget);
+        const replacement = yield* manager
+          .ensureEnvironment(requestedTarget)
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(killStarted);
+        const interrupt = yield* Fiber.interrupt(replacement).pipe(Effect.forkChild);
+        yield* Effect.yieldNow;
+
+        assert.equal(tunnelKillCount, 0);
+
+        yield* Deferred.succeed(allowKill, undefined);
+        yield* Fiber.join(interrupt);
+        const replacementExit = yield* Fiber.await(replacement);
+
+        assert.isTrue(Exit.isFailure(replacementExit));
+        assert.equal(tunnelKillCount, 1);
+      }).pipe(Effect.provide(layer), Effect.scoped);
+    }),
+  );
 
   it.effect("interrupts tunnel creation superseded by a new alias resolution", () =>
     Effect.gen(function* () {
@@ -580,7 +753,7 @@ describe("ssh tunnel scripts", () => {
         assert.equal(interruptedLaunchCount, 2);
         assert.equal(launchCount, 3);
         assert.equal(tunnelKillCount, 1);
-        assert.equal(stopCommandCount, 1);
+        assert.equal(stopCommandCount, 2);
         const thirdExit = yield* Fiber.await(third);
         assert.isTrue(Exit.isFailure(thirdExit));
       }).pipe(Effect.provide(layer), Effect.scoped);

@@ -15,6 +15,7 @@ import {
   getLastNonEmptyOutputLine,
   parseSshResolveOutput,
   resolveRemoteT3CliPackageSpec,
+  resolveSshTarget,
   runSshCommand,
 } from "./command.ts";
 import { SshCommandError } from "./errors.ts";
@@ -98,6 +99,45 @@ describe("ssh command", () => {
       );
     }),
   );
+
+  it.effect("resolves ssh config with the explicit username", () => {
+    let spawnedArgs: ReadonlyArray<string> = [];
+    const spawner = ChildProcessSpawner.make((command) => {
+      spawnedArgs = command._tag === "StandardCommand" ? command.args : [];
+      return Effect.succeed(
+        ChildProcessSpawner.makeHandle({
+          pid: ChildProcessSpawner.ProcessId(123),
+          stdout: Stream.make(
+            encoder.encode(
+              ["hostname devbox.example.com", "user chosen-user", "port 3333", ""].join("\n"),
+            ),
+          ),
+          stderr: Stream.empty,
+          all: Stream.empty,
+          exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(0)),
+          isRunning: Effect.succeed(false),
+          kill: () => Effect.void,
+          stdin: Sink.drain,
+          getInputFd: () => Sink.drain,
+          getOutputFd: () => Stream.empty,
+          unref: Effect.succeed(Effect.void),
+        }),
+      );
+    });
+    const processLayer = Layer.mergeAll(
+      NodeServices.layer,
+      Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner),
+    );
+
+    return Effect.gen(function* () {
+      const target = yield* resolveSshTarget("devbox", { username: "chosen-user" });
+
+      assert.include(spawnedArgs, "-G");
+      assert.include(spawnedArgs, "chosen-user@devbox");
+      assert.equal(target.username, "chosen-user");
+      assert.equal(target.port, 3333);
+    }).pipe(Effect.provide(processLayer));
+  });
 
   it.effect("resolves the remote t3 package spec from the desktop release channel", () =>
     Effect.sync(() => {

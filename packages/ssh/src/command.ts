@@ -327,6 +327,7 @@ export const runSshCommand = Effect.fn("ssh/command.runSshCommand")(function* (
 
 export const resolveSshTarget = Effect.fn("ssh/command.resolveSshTarget")(function* (
   alias: string,
+  input?: { readonly username?: string | null },
 ): Effect.fn.Return<
   DesktopSshEnvironmentTarget,
   SshCommandError | SshInvalidTargetError,
@@ -336,13 +337,14 @@ export const resolveSshTarget = Effect.fn("ssh/command.resolveSshTarget")(functi
   if (trimmedAlias.length === 0) {
     return yield* new SshInvalidTargetError({ message: "SSH host alias is required." });
   }
+  const username = input?.username?.trim() || null;
 
-  yield* Effect.logDebug("ssh.target.resolve.start", { alias: trimmedAlias });
+  yield* Effect.logDebug("ssh.target.resolve.start", { alias: trimmedAlias, username });
   return yield* runSshCommand(
     {
       alias: trimmedAlias,
       hostname: trimmedAlias,
-      username: null,
+      username,
       port: null,
     },
     { preHostArgs: ["-G"] },
@@ -356,7 +358,7 @@ export const resolveSshTarget = Effect.fn("ssh/command.resolveSshTarget")(functi
         Effect.as({
           alias: trimmedAlias,
           hostname: trimmedAlias,
-          username: null,
+          username,
           port: null,
         }),
       ),
