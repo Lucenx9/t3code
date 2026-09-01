@@ -870,6 +870,9 @@ export const stopRemoteServer = Effect.fn("ssh/tunnel.stopRemoteServer")(functio
     stateKey,
   });
   yield* runSshCommand(target, {
+    ...(target.alias.trim().length > 0 && target.hostname.trim().length > 0
+      ? { preHostArgs: ["-o", `HostName=${target.hostname.trim()}`] }
+      : {}),
     remoteCommandArgs: ["sh", "-s"],
     stdin: buildRemoteStopScript(target, stateKey),
     ...(input?.authSecret === undefined ? {} : { authSecret: input.authSecret }),
@@ -1265,9 +1268,10 @@ const makeSshEnvironmentManager = Effect.fn("ssh/tunnel.SshEnvironmentManager.ma
   const cancelPendingTunnelEntry = Effect.fn("ssh/tunnel.cancelPendingTunnelEntry")(function* (
     remoteStateKey: string,
     target: DesktopSshEnvironmentTarget,
+    expected?: PendingSshTunnelEntry,
   ) {
     const pending = pendingTunnelEntries.get(remoteStateKey);
-    if (!pending) {
+    if (!pending || (expected !== undefined && pending !== expected)) {
       return;
     }
     pendingTunnelEntries.delete(remoteStateKey);
@@ -1582,23 +1586,37 @@ const makeSshEnvironmentManager = Effect.fn("ssh/tunnel.SshEnvironmentManager.ma
       const start = yield* Deferred.make<void>();
       const fiber = yield* Deferred.await(start).pipe(
         Effect.andThen(
-          createTunnelEntry({
-            key,
-            remoteStateKey,
-            resolvedTarget,
-            ...(runner === undefined ? {} : { runner }),
-          }),
-        ),
-        Effect.flatMap((createdEntry) =>
-          Effect.gen(function* () {
-            if (pendingTunnelEntries.get(remoteStateKey)?.deferred !== deferred) {
-              yield* closeLocalTunnelEntry(createdEntry);
-              return yield* makeSshTunnelCancelledError(resolvedTarget);
-            }
-            pendingTunnelEntries.delete(remoteStateKey);
-            tunnels.set(remoteStateKey, createdEntry);
-            return createdEntry;
-          }),
+          Effect.uninterruptibleMask((restore) =>
+            restore(
+              createTunnelEntry({
+                key,
+                remoteStateKey,
+                resolvedTarget,
+                ...(runner === undefined ? {} : { runner }),
+              }),
+            ).pipe(
+              Effect.flatMap((createdEntry) =>
+                restore(
+                  Effect.gen(function* () {
+                    if (pendingTunnelEntries.get(remoteStateKey)?.deferred !== deferred) {
+                      return yield* makeSshTunnelCancelledError(resolvedTarget);
+                    }
+                    pendingTunnelEntries.delete(remoteStateKey);
+                    tunnels.set(remoteStateKey, createdEntry);
+                    return createdEntry;
+                  }),
+                ).pipe(
+                  Effect.onExit((exit) =>
+                    Exit.isSuccess(exit)
+                      ? Effect.void
+                      : tunnels.get(remoteStateKey) === createdEntry
+                        ? closeTunnelEntry(createdEntry)
+                        : closeLocalTunnelEntry(createdEntry),
+                  ),
+                ),
+              ),
+            ),
+          ),
         ),
         Effect.tapError((cause) =>
           Effect.logWarning("ssh.environment.tunnel.create.failed", {
@@ -1632,7 +1650,9 @@ const makeSshEnvironmentManager = Effect.fn("ssh/tunnel.SshEnvironmentManager.ma
     }
 
     return yield* Deferred.await(pendingEntry.deferred).pipe(
-      Effect.onInterrupt(() => cancelPendingTunnelEntry(remoteStateKey, resolvedTarget)),
+      Effect.onInterrupt(() =>
+        cancelPendingTunnelEntry(remoteStateKey, resolvedTarget, pendingEntry),
+      ),
     );
   });
 

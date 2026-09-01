@@ -400,6 +400,7 @@ describe("ssh tunnel scripts", () => {
     const resolutions = [
       { hostname: "first.example.test", port: 2222 },
       { hostname: "second.example.test", port: 3333 },
+      { hostname: "third.example.test", port: 4444 },
     ] as const;
     const spawnedCommands: Array<ReadonlyArray<string>> = [];
     let resolutionIndex = 0;
@@ -469,6 +470,12 @@ describe("ssh tunnel scripts", () => {
       assert.equal(stopCommandCount, 0);
 
       yield* manager.disconnectEnvironment(requestedTarget);
+      const stopCommand = spawnedCommands.findLast(
+        (args) => args.includes("sh") && !args.includes("--"),
+      );
+      assert.isDefined(stopCommand);
+      assert.include(stopCommand, "HostName=second.example.test");
+      assert.include(stopCommand, "chosen-user@devbox");
       assert.equal(tunnelKillCount, 2);
       assert.equal(stopCommandCount, 1);
     }).pipe(Effect.provide(layer), Effect.scoped);
