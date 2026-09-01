@@ -486,7 +486,7 @@ describe("ConnectionResolver", () => {
         port: 2222,
       } as const;
       const preparedTargets = yield* Ref.make<ReadonlyArray<DesktopSshEnvironmentTarget>>([]);
-      const persistedProfiles = yield* Ref.make<ReadonlyArray<ConnectionProfile>>([]);
+      const profileWrites = yield* Ref.make<ReadonlyArray<ConnectionProfile>>([]);
       const target = new SshConnectionTarget({
         environmentId: ENVIRONMENT_ID,
         label: "SSH",
@@ -500,7 +500,7 @@ describe("ConnectionResolver", () => {
       });
       const brokerLayer = yield* makeDependencies({
         onProfilePut: (nextProfile) =>
-          Ref.update(persistedProfiles, (profiles) => [...profiles, nextProfile]),
+          Ref.update(profileWrites, (profiles) => [...profiles, nextProfile]),
         prepareSsh: (input) =>
           Ref.update(preparedTargets, (targets) => [...targets, input.target]).pipe(
             Effect.as({
@@ -517,8 +517,8 @@ describe("ConnectionResolver", () => {
       const broker = yield* ConnectionResolver.ConnectionResolver.pipe(Effect.provide(brokerLayer));
 
       yield* broker.prepare(catalogEntry(target, Option.some(profile)));
-      const savedProfile = (yield* Ref.get(persistedProfiles)).at(-1) ?? profile;
-      yield* broker.prepare(catalogEntry(target, Option.some(savedProfile)));
+      expect(yield* Ref.get(profileWrites)).toEqual([]);
+      yield* broker.prepare(catalogEntry(target, Option.some(profile)));
 
       expect(yield* Ref.get(preparedTargets)).toEqual([requestedTarget, requestedTarget]);
     }),

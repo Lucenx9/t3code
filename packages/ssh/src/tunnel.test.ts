@@ -394,56 +394,95 @@ describe("ssh tunnel scripts", () => {
       username: "chosen-user",
       port: null,
     } as const;
-    const connectAfterResolution = (resolvedHostname: string, resolvedPort: number) => {
-      const spawnedCommands: Array<ReadonlyArray<string>> = [];
-      const spawner = ChildProcessSpawner.make((command) =>
-        Effect.sync(() => {
-          const args = commandArgs(command);
-          spawnedCommands.push(args);
-          if (args.includes("-G")) {
-            return makeSuccessfulProcess(
-              [`hostname ${resolvedHostname}`, "user config-user", `port ${resolvedPort}`, ""].join(
-                "\n",
-              ),
-            );
-          }
-          if (args.includes("-N")) {
-            return makeRunningProcess(() => undefined);
-          }
+    const resolutions = [
+      { hostname: "first.example.test", port: 2222 },
+      { hostname: "second.example.test", port: 3333 },
+    ] as const;
+    const spawnedCommands: Array<ReadonlyArray<string>> = [];
+    let resolutionIndex = 0;
+    let tunnelKillCount = 0;
+    let stopCommandCount = 0;
+    const spawner = ChildProcessSpawner.make((command) =>
+      Effect.sync(() => {
+        const args = commandArgs(command);
+        spawnedCommands.push(args);
+        if (args.includes("-G")) {
+          const resolution = resolutions[Math.min(resolutionIndex, resolutions.length - 1)];
+          resolutionIndex += 1;
+          assert.isDefined(resolution);
+          return makeSuccessfulProcess(
+            [
+              `hostname ${resolution.hostname}`,
+              "user config-user",
+              `port ${resolution.port}`,
+              "",
+            ].join("\n"),
+          );
+        }
+        if (args.includes("-N")) {
+          return makeRunningProcess(() => {
+            tunnelKillCount += 1;
+          });
+        }
+        if (args.includes("sh") && args.includes("--")) {
           return makeSuccessfulProcess('{"remotePort":3773}\n');
-        }),
-      );
-      const layer = Layer.mergeAll(
-        NodeServices.layer,
-        Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner),
-        Layer.succeed(HttpClient.HttpClient, testHttpClient),
-        Layer.succeed(NetService.NetService, testNetService),
-        SshPasswordPrompt.disabledLayer,
-        SshEnvironmentManager.layer(),
-      );
-
-      return Effect.gen(function* () {
-        const manager = yield* SshEnvironmentManager;
-        const environment = yield* manager.ensureEnvironment(requestedTarget);
-        const launchArgs = spawnedCommands.find(
-          (args) => args.includes("sh") && args.includes("--"),
-        );
-        assert.isDefined(launchArgs);
-        assert.equal(environment.target.hostname, resolvedHostname);
-        assert.equal(environment.target.port, resolvedPort);
-        assert.include(launchArgs, String(resolvedPort));
-        assert.include(launchArgs, "chosen-user@devbox");
-        return launchArgs.at(-1);
-      }).pipe(Effect.provide(layer), Effect.scoped);
-    };
+        }
+        if (args.includes("sh")) {
+          stopCommandCount += 1;
+        }
+        return makeSuccessfulProcess('{"stopped":true}\n');
+      }),
+    );
+    const layer = Layer.mergeAll(
+      NodeServices.layer,
+      Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner),
+      Layer.succeed(HttpClient.HttpClient, testHttpClient),
+      Layer.succeed(NetService.NetService, testNetService),
+      SshPasswordPrompt.disabledLayer,
+      SshEnvironmentManager.layer(),
+    );
 
     return Effect.gen(function* () {
-      const firstStateKey = yield* connectAfterResolution("first.example.test", 2222);
-      const secondStateKey = yield* connectAfterResolution("second.example.test", 3333);
+      const manager = yield* SshEnvironmentManager;
+      const first = yield* manager.ensureEnvironment(requestedTarget);
+      const second = yield* manager.ensureEnvironment(requestedTarget);
+      const launchCommands = spawnedCommands.filter(
+        (args) => args.includes("sh") && args.includes("--"),
+      );
+      const firstLaunch = launchCommands[0];
+      const secondLaunch = launchCommands[1];
 
-      assert.isDefined(firstStateKey);
-      assert.equal(secondStateKey, firstStateKey);
-    });
+      assert.equal(first.target.hostname, "first.example.test");
+      assert.equal(first.target.port, 2222);
+      assert.equal(second.target.hostname, "second.example.test");
+      assert.equal(second.target.port, 3333);
+      assert.isDefined(firstLaunch);
+      assert.isDefined(secondLaunch);
+      assert.include(firstLaunch, "chosen-user@devbox");
+      assert.include(secondLaunch, "chosen-user@devbox");
+      assert.equal(secondLaunch.at(-1), firstLaunch.at(-1));
+      assert.equal(spawnedCommands.filter((args) => args.includes("-N")).length, 2);
+      assert.equal(tunnelKillCount, 1);
+      assert.equal(stopCommandCount, 0);
+
+      yield* manager.disconnectEnvironment(requestedTarget);
+      assert.equal(tunnelKillCount, 2);
+      assert.equal(stopCommandCount, 1);
+    }).pipe(Effect.provide(layer), Effect.scoped);
+  });
+
+  it("rejects invalid remote state key overrides", () => {
+    const target = {
+      alias: "devbox",
+      hostname: "devbox.example.com",
+      username: "julius",
+      port: 2222,
+    } as const;
+
+    assert.throws(
+      () => buildRemoteStopScript(target, 'x"; command; #'),
+      /Invalid remote state key/u,
+    );
   });
 
   it.effect("closes the tunnel scope and starts fresh after disconnect", () => {
