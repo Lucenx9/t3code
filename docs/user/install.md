@@ -49,6 +49,12 @@ Nightly:
 yay -S t3code-nightly-bin
 ```
 
+Linux AppImage:
+
+Download `T3-Code-x86_64.AppImage` from GitHub Releases. In-app updates replace that file without
+changing its path. If you installed an older versioned AppImage, update your desktop entry or
+symlink to the stable filename after the first upgrade.
+
 ### Windows Subsystem for Linux
 
 When the desktop app runs a WSL backend, it installs the matching server runtime into

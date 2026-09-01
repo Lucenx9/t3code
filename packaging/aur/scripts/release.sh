@@ -17,7 +17,7 @@ fi
 
 version="${tag#v}"
 pkgver="${version//-/_}"
-asset_name="T3-Code-${version}-x86_64.AppImage"
+asset_name='T3-Code-x86_64.AppImage'
 release_json="$(gh api "repos/$repo/releases/tags/$tag")"
 asset_digest="$(jq -r --arg name "$asset_name" \
   '.assets[] | select(.name == $name) | .digest' <<<"$release_json")"
@@ -39,6 +39,7 @@ cd "$package_dir"
 sed -Ei \
   -e "s/^pkgver=.*/pkgver=$pkgver/" \
   -e "s/^pkgrel=.*/pkgrel=$pkgrel/" \
+  -e "s/^_appimage_asset=.*/_appimage_asset='$asset_name'/" \
   -e "/# AppImage$/s/'[0-9a-f]{64}'/'$appimage_sha256'/" \
   -e "/# upstream license$/s/'[0-9a-f]{64}'/'$license_sha256'/" \
   PKGBUILD
