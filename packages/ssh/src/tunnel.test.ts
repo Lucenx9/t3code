@@ -387,6 +387,65 @@ describe("ssh tunnel scripts", () => {
     }).pipe(Effect.provide(processLayer));
   });
 
+  it.effect("keeps remote state identity stable when an alias resolution changes", () => {
+    const requestedTarget = {
+      alias: "devbox",
+      hostname: "devbox",
+      username: "chosen-user",
+      port: null,
+    } as const;
+    const connectAfterResolution = (resolvedHostname: string, resolvedPort: number) => {
+      const spawnedCommands: Array<ReadonlyArray<string>> = [];
+      const spawner = ChildProcessSpawner.make((command) =>
+        Effect.sync(() => {
+          const args = commandArgs(command);
+          spawnedCommands.push(args);
+          if (args.includes("-G")) {
+            return makeSuccessfulProcess(
+              [`hostname ${resolvedHostname}`, "user config-user", `port ${resolvedPort}`, ""].join(
+                "\n",
+              ),
+            );
+          }
+          if (args.includes("-N")) {
+            return makeRunningProcess(() => undefined);
+          }
+          return makeSuccessfulProcess('{"remotePort":3773}\n');
+        }),
+      );
+      const layer = Layer.mergeAll(
+        NodeServices.layer,
+        Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        Layer.succeed(HttpClient.HttpClient, testHttpClient),
+        Layer.succeed(NetService.NetService, testNetService),
+        SshPasswordPrompt.disabledLayer,
+        SshEnvironmentManager.layer(),
+      );
+
+      return Effect.gen(function* () {
+        const manager = yield* SshEnvironmentManager;
+        const environment = yield* manager.ensureEnvironment(requestedTarget);
+        const launchArgs = spawnedCommands.find(
+          (args) => args.includes("sh") && args.includes("--"),
+        );
+        assert.isDefined(launchArgs);
+        assert.equal(environment.target.hostname, resolvedHostname);
+        assert.equal(environment.target.port, resolvedPort);
+        assert.include(launchArgs, String(resolvedPort));
+        assert.include(launchArgs, "chosen-user@devbox");
+        return launchArgs.at(-1);
+      }).pipe(Effect.provide(layer), Effect.scoped);
+    };
+
+    return Effect.gen(function* () {
+      const firstStateKey = yield* connectAfterResolution("first.example.test", 2222);
+      const secondStateKey = yield* connectAfterResolution("second.example.test", 3333);
+
+      assert.isDefined(firstStateKey);
+      assert.equal(secondStateKey, firstStateKey);
+    });
+  });
+
   it.effect("closes the tunnel scope and starts fresh after disconnect", () => {
     const spawnedCommands: Array<ReadonlyArray<string>> = [];
     let tunnelKillCount = 0;

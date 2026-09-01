@@ -33,7 +33,6 @@ import type {
   SshConnectionTarget,
 } from "./model.ts";
 import { ConnectionBlockedError, type ConnectionAttemptError } from "./model.ts";
-import * as ConnectionProfileStore from "./profileStore.ts";
 
 export class ConnectionResolver extends Context.Service<
   ConnectionResolver,
@@ -196,7 +195,6 @@ const makeRelayBroker = Effect.fn("clientRuntime.connection.broker.makeRelay")(f
 });
 
 const makeSshBroker = Effect.fn("clientRuntime.connection.broker.makeSsh")(function* () {
-  const profiles = yield* ConnectionProfileStore.ConnectionProfileStore;
   const ssh = yield* ClientCapabilities.SshEnvironmentGateway;
   const remote = yield* RemoteEnvironmentAuthorization.RemoteEnvironmentAuthorization;
 
@@ -225,14 +223,6 @@ const makeSshBroker = Effect.fn("clientRuntime.connection.broker.makeSsh")(funct
       expectedEnvironmentId: target.environmentId,
       target: profile.target,
     });
-    yield* profiles.put(
-      new SshConnectionProfile({
-        connectionId: profile.connectionId,
-        environmentId: profile.environmentId,
-        label: profile.label,
-        target: prepared.bootstrap.target,
-      }),
-    );
     const authorized = yield* remote.authorizeBearer({
       expectedEnvironmentId: target.environmentId,
       httpBaseUrl: prepared.bootstrap.httpBaseUrl,

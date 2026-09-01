@@ -97,6 +97,7 @@ const makeDependencies = Effect.fn("TestConnectionResolver.makeDependencies")((o
   readonly authorizeDpop?: RemoteEnvironmentAuthorization.RemoteEnvironmentAuthorization["Service"]["authorizeDpop"];
   readonly primaryBearerToken?: string;
   readonly prepareSsh?: ClientCapabilities.SshEnvironmentGateway["Service"]["prepare"];
+  readonly onProfilePut?: (profile: ConnectionProfile) => Effect.Effect<void>;
 }) => {
   const profiles = new Map(
     (options?.profiles ?? []).map((profile) => [profile.connectionId, profile]),
@@ -105,7 +106,10 @@ const makeDependencies = Effect.fn("TestConnectionResolver.makeDependencies")((o
 
   const profileStore = ConnectionProfileStore.ConnectionProfileStore.of({
     get: (connectionId) => Effect.succeed(Option.fromNullishOr(profiles.get(connectionId))),
-    put: (profile) => Effect.sync(() => void profiles.set(profile.connectionId, profile)),
+    put: (profile) =>
+      Effect.sync(() => void profiles.set(profile.connectionId, profile)).pipe(
+        Effect.andThen(options?.onProfilePut?.(profile) ?? Effect.void),
+      ),
     remove: (connectionId) => Effect.sync(() => void profiles.delete(connectionId)),
   });
   const credentialStore = ConnectionCredentialStore.ConnectionCredentialStore.of({
@@ -464,6 +468,59 @@ describe("ConnectionResolver", () => {
       ).toContain("wsTicket=bearer");
       expect(yield* Ref.get(preparedTargets)).toEqual([SSH_TARGET]);
       expect(yield* Ref.get(connectionMethods)).toEqual(["ssh"]);
+    }),
+  );
+
+  it.effect("keeps the requested SSH target across reconnects", () =>
+    Effect.gen(function* () {
+      const requestedTarget = {
+        alias: "development",
+        hostname: "development",
+        username: "developer",
+        port: null,
+      } as const;
+      const resolvedTarget = {
+        alias: "development",
+        hostname: "development.example.test",
+        username: "developer",
+        port: 2222,
+      } as const;
+      const preparedTargets = yield* Ref.make<ReadonlyArray<DesktopSshEnvironmentTarget>>([]);
+      const persistedProfiles = yield* Ref.make<ReadonlyArray<ConnectionProfile>>([]);
+      const target = new SshConnectionTarget({
+        environmentId: ENVIRONMENT_ID,
+        label: "SSH",
+        connectionId: "ssh-1",
+      });
+      const profile = new SshConnectionProfile({
+        connectionId: "ssh-1",
+        environmentId: ENVIRONMENT_ID,
+        label: "SSH",
+        target: requestedTarget,
+      });
+      const brokerLayer = yield* makeDependencies({
+        onProfilePut: (nextProfile) =>
+          Ref.update(persistedProfiles, (profiles) => [...profiles, nextProfile]),
+        prepareSsh: (input) =>
+          Ref.update(preparedTargets, (targets) => [...targets, input.target]).pipe(
+            Effect.as({
+              bootstrap: {
+                target: resolvedTarget,
+                httpBaseUrl: "http://127.0.0.1:4010",
+                wsBaseUrl: "ws://127.0.0.1:4010",
+                pairingToken: null,
+              },
+              bearerToken: "ssh-bearer",
+            }),
+          ),
+      });
+      const broker = yield* ConnectionResolver.ConnectionResolver.pipe(Effect.provide(brokerLayer));
+
+      yield* broker.prepare(catalogEntry(target, Option.some(profile)));
+      const savedProfile = (yield* Ref.get(persistedProfiles)).at(-1) ?? profile;
+      yield* broker.prepare(catalogEntry(target, Option.some(savedProfile)));
+
+      expect(yield* Ref.get(preparedTargets)).toEqual([requestedTarget, requestedTarget]);
     }),
   );
 

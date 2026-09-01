@@ -132,6 +132,10 @@ Use this when you want the desktop app to start or reuse T3 Code on another mach
 4. Enter the SSH target, such as `user@example.com`.
 5. Confirm the launch. The desktop app probes the host, starts or reuses a remote T3 server, opens a local port forward, and saves the environment.
 
+When the target is an alias from `~/.ssh/config`, T3 Code resolves `HostName`, `User`, and `Port` again on each connection. A username or port entered in T3 Code remains an explicit override. This allows an alias to keep working when its configured address or port changes.
+
+Connections saved by an earlier version may contain the address, username, and port that the alias resolved to at setup time. Remove and add such a connection once to restore alias-based resolution.
+
 After setup, the renderer connects to a local forwarded HTTP/WebSocket endpoint. The remote host still owns the actual T3 server, projects, files, git state, terminals, and provider sessions.
 
 SSH launch is a desktop feature because it needs local process and SSH access. Once the environment is paired and saved, it uses the same environment list and connection model as direct LAN, Tailscale, HTTPS, or future tunnel-backed environments.
