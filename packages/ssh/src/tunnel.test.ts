@@ -13,6 +13,7 @@ import { HttpClient, HttpClientResponse } from "effect/unstable/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import { SshPasswordPrompt } from "./auth.ts";
+import { SshInvalidTargetError } from "./errors.ts";
 import {
   buildRemoteLaunchScript,
   buildRemotePairingScript,
@@ -483,6 +484,26 @@ describe("ssh tunnel scripts", () => {
       () => buildRemoteStopScript(target, 'x"; command; #'),
       /Invalid remote state key/u,
     );
+  });
+
+  it.effect("reports invalid remote state key overrides through the typed error channel", () => {
+    const target = {
+      alias: "devbox",
+      hostname: "devbox.example.com",
+      username: "julius",
+      port: 2222,
+    } as const;
+
+    return Effect.gen(function* () {
+      const error = yield* launchOrReuseRemoteServer(
+        target,
+        undefined,
+        undefined,
+        'x"; command; #',
+      ).pipe(Effect.flip);
+
+      assert.instanceOf(error, SshInvalidTargetError);
+    }).pipe(Effect.provide(NodeServices.layer));
   });
 
   it.effect("closes the tunnel scope and starts fresh after disconnect", () => {
