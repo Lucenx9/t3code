@@ -2,7 +2,9 @@ import { assert, describe, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NetService from "@t3tools/shared/Net";
 import * as Duration from "effect/Duration";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Result from "effect/Result";
@@ -471,6 +473,112 @@ describe("ssh tunnel scripts", () => {
       assert.equal(stopCommandCount, 1);
     }).pipe(Effect.provide(layer), Effect.scoped);
   });
+
+  it.effect("interrupts tunnel creation superseded by a new alias resolution", () =>
+    Effect.gen(function* () {
+      const firstLaunchStarted = yield* Deferred.make<void>();
+      const thirdLaunchStarted = yield* Deferred.make<void>();
+      const requestedTarget = {
+        alias: "devbox",
+        hostname: "devbox",
+        username: "chosen-user",
+        port: null,
+      } as const;
+      const resolutions = [
+        { hostname: "first.example.test", port: 2222 },
+        { hostname: "second.example.test", port: 3333 },
+        { hostname: "third.example.test", port: 4444 },
+      ] as const;
+      let resolutionIndex = 0;
+      let launchCount = 0;
+      let interruptedLaunchCount = 0;
+      let tunnelKillCount = 0;
+      let stopCommandCount = 0;
+      const spawner = ChildProcessSpawner.make((command) =>
+        Effect.gen(function* () {
+          const args = commandArgs(command);
+          if (args.includes("-G")) {
+            const resolution = resolutions[Math.min(resolutionIndex, resolutions.length - 1)];
+            resolutionIndex += 1;
+            assert.isDefined(resolution);
+            return makeSuccessfulProcess(
+              [
+                `hostname ${resolution.hostname}`,
+                "user config-user",
+                `port ${resolution.port}`,
+                "",
+              ].join("\n"),
+            );
+          }
+          if (args.includes("sh") && args.includes("--")) {
+            launchCount += 1;
+            const launchStarted =
+              launchCount === 1
+                ? firstLaunchStarted
+                : launchCount === 3
+                  ? thirdLaunchStarted
+                  : null;
+            if (launchStarted !== null) {
+              return yield* Deferred.succeed(launchStarted, undefined).pipe(
+                Effect.andThen(Effect.never),
+                Effect.onInterrupt(() =>
+                  Effect.sync(() => {
+                    interruptedLaunchCount += 1;
+                  }),
+                ),
+              );
+            }
+            return makeSuccessfulProcess('{"remotePort":3773}\n');
+          }
+          if (args.includes("-N")) {
+            return makeRunningProcess(() => {
+              tunnelKillCount += 1;
+            });
+          }
+          if (args.includes("sh")) {
+            stopCommandCount += 1;
+          }
+          return makeSuccessfulProcess('{"stopped":true}\n');
+        }),
+      );
+      const layer = Layer.mergeAll(
+        NodeServices.layer,
+        Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        Layer.succeed(HttpClient.HttpClient, testHttpClient),
+        Layer.succeed(NetService.NetService, testNetService),
+        SshPasswordPrompt.disabledLayer,
+        SshEnvironmentManager.layer(),
+      );
+
+      yield* Effect.gen(function* () {
+        const manager = yield* SshEnvironmentManager;
+        const first = yield* manager.ensureEnvironment(requestedTarget).pipe(Effect.forkChild);
+        yield* Deferred.await(firstLaunchStarted);
+
+        const second = yield* manager.ensureEnvironment(requestedTarget);
+
+        assert.equal(second.target.hostname, "second.example.test");
+        assert.equal(second.target.port, 3333);
+        assert.equal(interruptedLaunchCount, 1);
+        assert.equal(launchCount, 2);
+        assert.equal(tunnelKillCount, 0);
+
+        const firstExit = yield* Fiber.await(first);
+        assert.isTrue(Exit.isFailure(firstExit));
+
+        const third = yield* manager.ensureEnvironment(requestedTarget).pipe(Effect.forkChild);
+        yield* Deferred.await(thirdLaunchStarted);
+        yield* manager.disconnectEnvironment(requestedTarget);
+
+        assert.equal(interruptedLaunchCount, 2);
+        assert.equal(launchCount, 3);
+        assert.equal(tunnelKillCount, 1);
+        assert.equal(stopCommandCount, 1);
+        const thirdExit = yield* Fiber.await(third);
+        assert.isTrue(Exit.isFailure(thirdExit));
+      }).pipe(Effect.provide(layer), Effect.scoped);
+    }),
+  );
 
   it("rejects invalid remote state key overrides", () => {
     const target = {

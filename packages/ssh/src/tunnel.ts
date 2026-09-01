@@ -13,6 +13,7 @@ import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
@@ -86,6 +87,7 @@ interface SshTunnelEntry {
 interface PendingSshTunnelEntry {
   readonly key: string;
   readonly deferred: Deferred.Deferred<SshTunnelEntry, SshEnvironmentEffectError>;
+  readonly fiber: Fiber.Fiber<void, never>;
 }
 
 type SshEnvironmentEffectContext =
@@ -1270,6 +1272,7 @@ const makeSshEnvironmentManager = Effect.fn("ssh/tunnel.SshEnvironmentManager.ma
     }
     pendingTunnelEntries.delete(remoteStateKey);
     yield* Deferred.fail(pending.deferred, makeSshTunnelCancelledError(target)).pipe(Effect.ignore);
+    yield* Fiber.interrupt(pending.fiber).pipe(Effect.ignore);
   });
 
   yield* Scope.addFinalizer(
@@ -1452,7 +1455,6 @@ const makeSshEnvironmentManager = Effect.fn("ssh/tunnel.SshEnvironmentManager.ma
         Exit.isSuccess(exit) ? Effect.void : Scope.close(entryScope, Exit.void).pipe(Effect.ignore),
       ),
     );
-    tunnels.set(input.remoteStateKey, tunnelEntry);
     const spawnerService = yield* ChildProcessSpawner.ChildProcessSpawner;
     const fileSystemService = yield* FileSystem.FileSystem;
     const pathService = yield* Path.Path;
@@ -1575,29 +1577,62 @@ const makeSshEnvironmentManager = Effect.fn("ssh/tunnel.SshEnvironmentManager.ma
       yield* cancelPendingTunnelEntry(remoteStateKey, resolvedTarget);
     }
 
-    const deferred = yield* Deferred.make<SshTunnelEntry, SshEnvironmentEffectError>();
-    pendingTunnelEntries.set(remoteStateKey, { key, deferred });
-
-    return yield* createTunnelEntry({
-      key,
-      remoteStateKey,
-      resolvedTarget,
-      ...(runner === undefined ? {} : { runner }),
-    }).pipe(
-      Effect.tapError((cause) =>
-        Effect.logWarning("ssh.environment.tunnel.create.failed", {
-          ...sshTargetLogFields(resolvedTarget),
-          key,
-          cause,
-        }),
-      ),
-      Effect.onExit((exit) =>
-        Effect.sync(() => {
-          if (pendingTunnelEntries.get(remoteStateKey)?.deferred === deferred) {
+    const pendingEntry = yield* Effect.gen(function* () {
+      const deferred = yield* Deferred.make<SshTunnelEntry, SshEnvironmentEffectError>();
+      const start = yield* Deferred.make<void>();
+      const fiber = yield* Deferred.await(start).pipe(
+        Effect.andThen(
+          createTunnelEntry({
+            key,
+            remoteStateKey,
+            resolvedTarget,
+            ...(runner === undefined ? {} : { runner }),
+          }),
+        ),
+        Effect.flatMap((createdEntry) =>
+          Effect.gen(function* () {
+            if (pendingTunnelEntries.get(remoteStateKey)?.deferred !== deferred) {
+              yield* closeLocalTunnelEntry(createdEntry);
+              return yield* makeSshTunnelCancelledError(resolvedTarget);
+            }
             pendingTunnelEntries.delete(remoteStateKey);
-          }
-        }).pipe(Effect.andThen(Deferred.done(deferred, exit))),
-      ),
+            tunnels.set(remoteStateKey, createdEntry);
+            return createdEntry;
+          }),
+        ),
+        Effect.tapError((cause) =>
+          Effect.logWarning("ssh.environment.tunnel.create.failed", {
+            ...sshTargetLogFields(resolvedTarget),
+            key,
+            cause,
+          }),
+        ),
+        Effect.onExit((exit) =>
+          Effect.sync(() => {
+            if (pendingTunnelEntries.get(remoteStateKey)?.deferred === deferred) {
+              pendingTunnelEntries.delete(remoteStateKey);
+            }
+          }).pipe(Effect.andThen(Deferred.done(deferred, exit))),
+        ),
+        Effect.ignore,
+        Effect.forkIn(managerScope, { uninterruptible: false }),
+      );
+      const pendingEntry = { key, deferred, fiber };
+      if (tunnels.has(remoteStateKey) || pendingTunnelEntries.has(remoteStateKey)) {
+        yield* Fiber.interrupt(fiber).pipe(Effect.ignore);
+        return null;
+      }
+      pendingTunnelEntries.set(remoteStateKey, pendingEntry);
+      yield* Deferred.succeed(start, undefined);
+      return pendingEntry;
+    }).pipe(Effect.uninterruptible);
+
+    if (pendingEntry === null) {
+      return yield* ensureTunnelEntry(key, remoteStateKey, resolvedTarget, runner);
+    }
+
+    return yield* Deferred.await(pendingEntry.deferred).pipe(
+      Effect.onInterrupt(() => cancelPendingTunnelEntry(remoteStateKey, resolvedTarget)),
     );
   });
 
@@ -1679,17 +1714,17 @@ const makeSshEnvironmentManager = Effect.fn("ssh/tunnel.SshEnvironmentManager.ma
     };
     const remoteStateKey = deriveRemoteStateKey(target);
     const key = targetConnectionKey(resolvedTarget);
-    const entry = tunnels.get(remoteStateKey) ?? null;
     yield* Effect.logDebug("ssh.environment.disconnect.targetResolved", {
       ...sshTargetLogFields(resolvedTarget),
       key,
-      hasTunnel: entry !== null,
+      hasTunnel: tunnels.has(remoteStateKey),
       hasPendingTunnel: pendingTunnelEntries.has(remoteStateKey),
     });
+    yield* cancelPendingTunnelEntry(remoteStateKey, resolvedTarget);
+    const entry = tunnels.get(remoteStateKey) ?? null;
     if (entry !== null) {
       yield* closeTunnelEntry(entry);
     }
-    yield* cancelPendingTunnelEntry(remoteStateKey, resolvedTarget);
     if (entry === null) {
       yield* runWithSshAuth({
         key,
