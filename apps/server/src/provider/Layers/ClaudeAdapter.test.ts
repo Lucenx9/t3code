@@ -27,6 +27,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Predicate from "effect/Predicate";
 import * as Random from "effect/Random";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
@@ -1140,6 +1141,186 @@ describe("ClaudeAdapterLive", () => {
           });
         }
       }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("completes MCP tools when concurrent sidechains reuse a block index", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const runtimeEventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.takeUntil((event) => event.type === "turn.completed"),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "run two agents",
+        attachments: [],
+      });
+
+      const sdkSessionId = "sdk-session-mcp-sidechains";
+      const calls = [
+        {
+          taskId: "task-mcp-a",
+          description: "Agent A",
+          parentToolUseId: "parent-tool-a",
+          toolUseId: "tool-mcp-a",
+          toolName: "mcp__linear__get_issue",
+          serverName: "linear",
+          partialJson: '{"issueId":"T3-101"}',
+          resultText: "Linear result",
+          taskUuid: "00000000-0000-4000-8000-000000000010",
+          startUuid: "00000000-0000-4000-8000-000000000011",
+          deltaUuid: "00000000-0000-4000-8000-000000000012",
+          resultUuid: "00000000-0000-4000-8000-000000000013",
+        },
+        {
+          taskId: "task-mcp-b",
+          description: "Agent B",
+          parentToolUseId: "parent-tool-b",
+          toolUseId: "tool-mcp-b",
+          toolName: "mcp__github__get_issue",
+          serverName: "github",
+          partialJson: '{"issueNumber":202}',
+          resultText: "GitHub result",
+          taskUuid: "00000000-0000-4000-8000-000000000014",
+          startUuid: "00000000-0000-4000-8000-000000000015",
+          deltaUuid: "00000000-0000-4000-8000-000000000016",
+          resultUuid: "00000000-0000-4000-8000-000000000017",
+        },
+      ] as const;
+
+      for (const call of calls) {
+        harness.query.emit({
+          type: "system",
+          subtype: "task_started",
+          task_id: call.taskId,
+          description: call.description,
+          task_type: "local_agent",
+          tool_use_id: call.parentToolUseId,
+          uuid: call.taskUuid,
+          session_id: sdkSessionId,
+        } as unknown as SDKMessage);
+      }
+
+      for (const call of calls) {
+        harness.query.emit({
+          type: "stream_event",
+          session_id: sdkSessionId,
+          uuid: call.startUuid,
+          parent_tool_use_id: call.parentToolUseId,
+          event: {
+            type: "content_block_start",
+            index: 0,
+            content_block: {
+              type: "mcp_tool_use",
+              id: call.toolUseId,
+              name: call.toolName,
+              server_name: call.serverName,
+              input: {},
+            },
+          },
+        } satisfies SDKMessage);
+      }
+
+      for (const call of calls) {
+        harness.query.emit({
+          type: "stream_event",
+          session_id: sdkSessionId,
+          uuid: call.deltaUuid,
+          parent_tool_use_id: call.parentToolUseId,
+          event: {
+            type: "content_block_delta",
+            index: 0,
+            delta: {
+              type: "input_json_delta",
+              partial_json: call.partialJson,
+            },
+          },
+        } satisfies SDKMessage);
+      }
+
+      for (const call of calls) {
+        harness.query.emit({
+          type: "stream_event",
+          session_id: sdkSessionId,
+          uuid: call.resultUuid,
+          parent_tool_use_id: call.parentToolUseId,
+          event: {
+            type: "content_block_start",
+            index: 1,
+            content_block: {
+              type: "mcp_tool_result",
+              tool_use_id: call.toolUseId,
+              is_error: false,
+              content: [{ type: "text", text: call.resultText, citations: null }],
+            },
+          },
+        } satisfies SDKMessage);
+      }
+
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        errors: [],
+        session_id: sdkSessionId,
+        uuid: "mcp-sidechains-result",
+      } as unknown as SDKMessage);
+
+      const completedItems = Array.from(yield* Fiber.join(runtimeEventsFiber)).flatMap((event) => {
+        if (event.type !== "item.completed" || event.payload.itemType !== "mcp_tool_call") {
+          return [];
+        }
+        const data = event.payload.data;
+        assert.ok(Predicate.isObject(data));
+        const item = data.item;
+        assert.ok(Predicate.isObject(item));
+        assert.ok(Predicate.isObject(item.result));
+        return [
+          {
+            itemId: String(event.itemId),
+            agentId: event.payload.agentId,
+            parentToolUseId: event.payload.parentToolUseId,
+            server: item.server,
+            arguments: item.arguments,
+            resultToolUseId: item.result.tool_use_id,
+            resultContent: item.result.content,
+          },
+        ];
+      });
+      assert.deepEqual(completedItems, [
+        {
+          itemId: "tool-mcp-a",
+          agentId: "task-mcp-a",
+          parentToolUseId: "parent-tool-a",
+          server: "linear",
+          arguments: { issueId: "T3-101" },
+          resultToolUseId: "tool-mcp-a",
+          resultContent: [{ type: "text", text: "Linear result", citations: null }],
+        },
+        {
+          itemId: "tool-mcp-b",
+          agentId: "task-mcp-b",
+          parentToolUseId: "parent-tool-b",
+          server: "github",
+          arguments: { issueNumber: 202 },
+          resultToolUseId: "tool-mcp-b",
+          resultContent: [{ type: "text", text: "GitHub result", citations: null }],
+        },
+      ]);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
