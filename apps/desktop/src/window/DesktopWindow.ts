@@ -185,7 +185,12 @@ export function isSameOriginRendererNavigation(input: {
   readonly navigationUrl: string;
 }): boolean {
   try {
-    return new URL(input.applicationUrl).origin === new URL(input.navigationUrl).origin;
+    const applicationUrl = new URL(input.applicationUrl);
+    const navigationUrl = new URL(input.navigationUrl);
+    return (
+      applicationUrl.protocol === navigationUrl.protocol &&
+      applicationUrl.host === navigationUrl.host
+    );
   } catch {
     return false;
   }
