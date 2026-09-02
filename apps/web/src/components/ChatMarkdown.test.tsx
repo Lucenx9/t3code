@@ -36,6 +36,49 @@ import ChatMarkdown, {
   shouldUseMarkdownFileBrowserPrimaryAction,
 } from "./ChatMarkdown";
 
+function runtimeGrowth({
+  smallInput,
+  largeInput,
+  repetitions = 1,
+}: {
+  smallInput: ReadonlyArray<string>;
+  largeInput: ReadonlyArray<string>;
+  repetitions?: number;
+}): number {
+  const smallSamples: number[] = [];
+  const largeSamples: number[] = [];
+  const measure = (input: ReadonlyArray<string>) => {
+    const startedAt = performance.now();
+    for (let repetition = 0; repetition < repetitions; repetition += 1) {
+      buildFileLinkParentSuffixByPath(input);
+    }
+    return performance.now() - startedAt;
+  };
+
+  for (let iteration = 0; iteration < 7; iteration += 1) {
+    let smallElapsedMs: number;
+    let largeElapsedMs: number;
+    if (iteration % 2 === 0) {
+      smallElapsedMs = measure(smallInput);
+      largeElapsedMs = measure(largeInput);
+    } else {
+      largeElapsedMs = measure(largeInput);
+      smallElapsedMs = measure(smallInput);
+    }
+
+    if (iteration >= 2) {
+      smallSamples.push(smallElapsedMs);
+      largeSamples.push(largeElapsedMs);
+    }
+  }
+
+  const median = (samples: number[]) => {
+    const sortedSamples = samples.toSorted((a, b) => a - b);
+    return sortedSamples[Math.floor(sortedSamples.length / 2)]!;
+  };
+  return median(largeSamples) / median(smallSamples);
+}
+
 describe("buildFileLinkParentSuffixByPath", () => {
   it.each([
     {
@@ -74,39 +117,27 @@ describe("buildFileLinkParentSuffixByPath", () => {
       );
     const smallPaths = paths(1_000);
     const largePaths = paths(4_000);
-    const smallSamples: number[] = [];
-    const largeSamples: number[] = [];
-
-    for (let iteration = 0; iteration < 7; iteration += 1) {
-      const measure = (input: string[]) => {
-        const startedAt = performance.now();
-        buildFileLinkParentSuffixByPath(input);
-        return performance.now() - startedAt;
-      };
-      let smallElapsedMs: number;
-      let largeElapsedMs: number;
-      if (iteration % 2 === 0) {
-        smallElapsedMs = measure(smallPaths);
-        largeElapsedMs = measure(largePaths);
-      } else {
-        largeElapsedMs = measure(largePaths);
-        smallElapsedMs = measure(smallPaths);
-      }
-
-      if (iteration >= 2) {
-        smallSamples.push(smallElapsedMs);
-        largeSamples.push(largeElapsedMs);
-      }
-    }
-
-    const median = (samples: number[]) => {
-      const sortedSamples = samples.toSorted((a, b) => a - b);
-      return sortedSamples[Math.floor(sortedSamples.length / 2)]!;
-    };
-    const growthRatio = median(largeSamples) / median(smallSamples);
 
     expect(buildFileLinkParentSuffixByPath(largePaths).size).toBe(largePaths.length);
-    expect(growthRatio).toBeLessThan(10);
+    expect(runtimeGrowth({ smallInput: smallPaths, largeInput: largePaths })).toBeLessThan(10);
+  });
+
+  it("scales linearly with path depth", () => {
+    const nestedPaths = (depth: number) => {
+      const commonParents = Array.from({ length: depth }, () => "seg").join("/");
+      return [
+        `/${commonParents}/first/shared/index.ts`,
+        `/${commonParents}/second/shared/index.ts`,
+      ];
+    };
+    const shallowPaths = nestedPaths(225);
+    const deepPaths = nestedPaths(900);
+    const deepSuffixes = buildFileLinkParentSuffixByPath(deepPaths);
+
+    expect([...deepSuffixes.values()]).toEqual(["first/shared", "second/shared"]);
+    expect(
+      runtimeGrowth({ smallInput: shallowPaths, largeInput: deepPaths, repetitions: 16 }),
+    ).toBeLessThan(10);
   });
 });
 

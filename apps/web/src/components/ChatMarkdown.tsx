@@ -1047,6 +1047,7 @@ function pathParentSegments(path: string): string[] {
   return segments.slice(0, -1);
 }
 
+/** Maps each ambiguous file path to the shortest parent suffix that distinguishes its basename. */
 export function buildFileLinkParentSuffixByPath(
   filePaths: ReadonlyArray<string>,
 ): Map<string, string> {
@@ -1069,12 +1070,25 @@ export function buildFileLinkParentSuffixByPath(
     const parentSegmentsByPath = new Map(
       uniquePaths.map((filePath) => [filePath, pathParentSegments(filePath)]),
     );
-    const suffixCounts = new Map<string, number>();
+    type SuffixTrieNode = {
+      pathCount: number;
+      children: Map<string, SuffixTrieNode>;
+    };
+    const suffixTrie: SuffixTrieNode = { pathCount: 0, children: new Map() };
 
     for (const segments of parentSegmentsByPath.values()) {
+      let node = suffixTrie;
       for (let depth = 1; depth <= segments.length; depth += 1) {
-        const suffix = segments.slice(-depth).join("/");
-        suffixCounts.set(suffix, (suffixCounts.get(suffix) ?? 0) + 1);
+        const segment = segments[segments.length - depth];
+        if (segment === undefined) break;
+
+        let child = node.children.get(segment);
+        if (child === undefined) {
+          child = { pathCount: 0, children: new Map() };
+          node.children.set(segment, child);
+        }
+        child.pathCount += 1;
+        node = child;
       }
     }
 
@@ -1083,12 +1097,18 @@ export function buildFileLinkParentSuffixByPath(
       if (segments.length === 0) continue;
 
       let minUniqueDepth = segments.length;
+      let node = suffixTrie;
       for (let depth = 1; depth <= segments.length; depth += 1) {
-        const suffix = segments.slice(-depth).join("/");
-        if (suffixCounts.get(suffix) === 1) {
+        const segment = segments[segments.length - depth];
+        if (segment === undefined) break;
+
+        const child = node.children.get(segment);
+        if (child === undefined) break;
+        if (child.pathCount === 1) {
           minUniqueDepth = depth;
           break;
         }
+        node = child;
       }
       const suffixDepth = Math.min(segments.length, Math.max(minUniqueDepth, 2));
       suffixByPath.set(filePath, segments.slice(-suffixDepth).join("/"));
