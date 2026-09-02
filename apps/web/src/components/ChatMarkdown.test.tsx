@@ -29,11 +29,86 @@ vi.mock("~/lib/openPullRequestLink", () => ({
 }));
 
 import ChatMarkdown, {
+  buildFileLinkParentSuffixByPath,
   canUseMarkdownFileShellActions,
   hasMarkdownFilePrimaryAction,
   orderedListGutterStyle,
   shouldUseMarkdownFileBrowserPrimaryAction,
 } from "./ChatMarkdown";
+
+describe("buildFileLinkParentSuffixByPath", () => {
+  it.each([
+    {
+      name: "mixed path depths, duplicates, bare files, and different basenames",
+      paths: [
+        "/repo/a/shared/index.ts",
+        "/repo/b/shared/index.ts",
+        "/b/shared/index.ts",
+        "/repo/a/shared/index.ts",
+        "index.ts",
+        "/repo/a/README.md",
+      ],
+      expected: new Map([
+        ["/repo/a/shared/index.ts", "a/shared"],
+        ["/repo/b/shared/index.ts", "repo/b/shared"],
+        ["/b/shared/index.ts", "b/shared"],
+      ]),
+    },
+    {
+      name: "mixed separators and Windows drive prefixes",
+      paths: [String.raw`C:\repo\src\index.ts`, "C:/repo/src/index.ts", "D:/repo/src/index.ts"],
+      expected: new Map([
+        ["C:/repo/src/index.ts", "C:/repo/src"],
+        ["D:/repo/src/index.ts", "D:/repo/src"],
+      ]),
+    },
+  ])("preserves suffix selection for $name", ({ paths, expected }) => {
+    expect(buildFileLinkParentSuffixByPath(paths)).toEqual(expected);
+  });
+
+  it("scales without pairwise growth for large same-basename groups", () => {
+    const paths = (count: number) =>
+      Array.from(
+        { length: count },
+        (_, index) => `/workspace/package-${index}/src/components/shared/index.ts`,
+      );
+    const smallPaths = paths(1_000);
+    const largePaths = paths(4_000);
+    const smallSamples: number[] = [];
+    const largeSamples: number[] = [];
+
+    for (let iteration = 0; iteration < 7; iteration += 1) {
+      const measure = (input: string[]) => {
+        const startedAt = performance.now();
+        buildFileLinkParentSuffixByPath(input);
+        return performance.now() - startedAt;
+      };
+      let smallElapsedMs: number;
+      let largeElapsedMs: number;
+      if (iteration % 2 === 0) {
+        smallElapsedMs = measure(smallPaths);
+        largeElapsedMs = measure(largePaths);
+      } else {
+        largeElapsedMs = measure(largePaths);
+        smallElapsedMs = measure(smallPaths);
+      }
+
+      if (iteration >= 2) {
+        smallSamples.push(smallElapsedMs);
+        largeSamples.push(largeElapsedMs);
+      }
+    }
+
+    const median = (samples: number[]) => {
+      const sortedSamples = samples.toSorted((a, b) => a - b);
+      return sortedSamples[Math.floor(sortedSamples.length / 2)]!;
+    };
+    const growthRatio = median(largeSamples) / median(smallSamples);
+
+    expect(buildFileLinkParentSuffixByPath(largePaths).size).toBe(largePaths.length);
+    expect(growthRatio).toBeLessThan(10);
+  });
+});
 
 describe("canUseMarkdownFileShellActions", () => {
   const environmentId = EnvironmentId.make("environment-1");
