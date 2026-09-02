@@ -444,6 +444,24 @@ describe("DesktopWindow", () => {
     assert.isFalse(
       DesktopWindow.isSameOriginRendererNavigation({
         applicationUrl: "t3code://app/",
+        navigationUrl: "t3code://other/",
+      }),
+    );
+    assert.isFalse(
+      DesktopWindow.isSameOriginRendererNavigation({
+        applicationUrl: "t3code://app/",
+        navigationUrl: "file:///etc/passwd",
+      }),
+    );
+    assert.isFalse(
+      DesktopWindow.isSameOriginRendererNavigation({
+        applicationUrl: "t3code://app/",
+        navigationUrl: "vscode://vscode-remote/ssh-remote+host/tmp",
+      }),
+    );
+    assert.isFalse(
+      DesktopWindow.isSameOriginRendererNavigation({
+        applicationUrl: "t3code://app/",
         navigationUrl: "https://accounts.microsoft.com/oauth",
       }),
     );
