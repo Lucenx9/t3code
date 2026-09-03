@@ -79,6 +79,9 @@ successful launch, T3 Code keeps the current runtime and one previous runtime fo
 removes older caches automatically. If a cached runtime stops working, T3 Code launches from the
 application files under `/mnt/c` instead and reinstalls the runtime on the next launch.
 
+When the desktop folder picker opens or returns a WSL path, it preserves trailing spaces in
+directory names.
+
 ## Providers
 
 T3 Code drives provider CLIs; it does not ship them. Install the CLI for each provider you want

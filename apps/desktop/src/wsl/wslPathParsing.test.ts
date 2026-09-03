@@ -105,6 +105,12 @@ describe("wslUncPathToLinuxPath", () => {
     );
   });
 
+  it("preserves trailing spaces in Linux path segments", () => {
+    expect(wslUncPathToLinuxPath("\\\\wsl.localhost\\Ubuntu\\home\\project ")).toBe(
+      "/home/project ",
+    );
+  });
+
   it("maps a distro UNC root to Linux root", () => {
     expect(wslUncPathToLinuxPath("\\\\wsl$\\Debian")).toBe("/");
     expect(wslUncPathToLinuxPath("\\\\wsl.localhost\\Debian\\")).toBe("/");
@@ -155,6 +161,18 @@ describe("resolveWslPickFolderDefaultPath", () => {
     ).toBe("\\\\wsl.localhost\\Debian\\home\\josh\\project");
   });
 
+  it("preserves trailing spaces in Linux initial paths", () => {
+    expect(
+      resolveWslPickFolderDefaultPath({ initialPath: "/home/josh/project " }, config, distros),
+    ).toBe("\\\\wsl.localhost\\Debian\\home\\josh\\project ");
+  });
+
+  it("uses WSL home for whitespace-only initial paths", () => {
+    expect(resolveWslPickFolderDefaultPath({ initialPath: "   " }, config, distros)).toBe(
+      "\\\\wsl.localhost\\Debian\\home",
+    );
+  });
+
   it("expands ~/path against the user's home dir when known", () => {
     expect(
       resolveWslPickFolderDefaultPath({ initialPath: "~/project" }, config, distros, "/home/josh"),
@@ -173,14 +191,13 @@ describe("resolveWslPickFolderDefaultPath", () => {
     );
   });
 
-  it("preserves existing UNC initial paths", () => {
-    expect(
-      resolveWslPickFolderDefaultPath(
-        { initialPath: "\\\\wsl.localhost\\Ubuntu\\home\\josh" },
-        config,
-        distros,
-      ),
-    ).toBe("\\\\wsl.localhost\\Ubuntu\\home\\josh");
+  it("preserves existing UNC initial paths, including trailing spaces", () => {
+    for (const initialPath of [
+      "\\\\wsl.localhost\\Ubuntu\\home\\josh",
+      "\\\\wsl.localhost\\Ubuntu\\home\\project ",
+    ]) {
+      expect(resolveWslPickFolderDefaultPath({ initialPath }, config, distros)).toBe(initialPath);
+    }
   });
 });
 

@@ -49,7 +49,7 @@ export function extractDistroFromUncPath(windowsPath: string): string | null {
 }
 
 export function wslUncPathToLinuxPath(windowsPath: string): string | null {
-  const match = /^\\\\(?:wsl\.localhost|wsl\$)\\([^\\]+)(?:\\(.*))?$/i.exec(windowsPath.trim());
+  const match = /^\\\\(?:wsl\.localhost|wsl\$)\\([^\\]+)(?:\\(.*))?$/i.exec(windowsPath);
   if (!match) return null;
 
   const distro = match[1]!;
@@ -89,12 +89,11 @@ export function resolveWslPickFolderDefaultPath(
     return homePath;
   }
 
-  const trimmedPath = initialPath.trim();
-  if (trimmedPath.length === 0) {
+  if (initialPath.trim().length === 0) {
     return homePath;
   }
-  if (trimmedPath.startsWith("\\\\")) {
-    return trimmedPath;
+  if (initialPath.startsWith("\\\\")) {
+    return initialPath;
   }
 
   const distroName = config.distro ?? distros.find((distro) => distro.isDefault)?.name ?? null;
@@ -107,18 +106,18 @@ export function resolveWslPickFolderDefaultPath(
 
   const normalizedUserHome = userHome && userHome.startsWith("/") ? userHome : null;
 
-  if (trimmedPath === "~") {
+  if (initialPath === "~") {
     return normalizedUserHome ? toUncPath(normalizedUserHome) : homePath;
   }
-  if (trimmedPath.startsWith("~/")) {
-    const remainder = trimmedPath.slice(2);
+  if (initialPath.startsWith("~/")) {
+    const remainder = initialPath.slice(2);
     if (normalizedUserHome) {
       return toUncPath(`${normalizedUserHome}/${remainder}`);
     }
     return homePath ? `${homePath}\\${remainder.replaceAll("/", "\\")}` : null;
   }
-  if (trimmedPath.startsWith("/")) {
-    return toUncPath(trimmedPath);
+  if (initialPath.startsWith("/")) {
+    return toUncPath(initialPath);
   }
 
   return homePath;
