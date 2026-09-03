@@ -46,6 +46,7 @@ import {
 import {
   findSharedSettingsMismatches,
   pickSharedServerSettings,
+  supportsSharedSettingsSync,
 } from "@t3tools/client-runtime/state/shared-settings";
 import { useThreadListV2Enabled } from "../threads/use-thread-list-v2-enabled";
 import {
@@ -58,10 +59,7 @@ import { useSavedRemoteConnections } from "../../state/use-remote-environment-re
 import { SettingsRow } from "./components/SettingsRow";
 import { SettingsSection } from "./components/SettingsSection";
 import { SettingsSwitchRow } from "./components/SettingsSwitchRow";
-import {
-  resolveAgentAwarenessPlatformPresentation,
-  supportsSharedSettingsSync,
-} from "./SettingsRouteScreen.logic";
+import { resolveAgentAwarenessPlatformPresentation } from "./SettingsRouteScreen.logic";
 
 type NotificationStatus = "checking" | "enabled" | "disabled" | "unsupported";
 type LiveActivityStatus = "checking" | "enabled" | "disabled" | "signed-out" | "linking";
@@ -556,9 +554,9 @@ const AUTO_SETTLE_DEFAULT_DAYS = DEFAULT_SERVER_SETTINGS.sidebarAutoSettleAfterD
 
 /**
  * Auto-settlement is a user preference that every server has to hold. Mobile
- * has no primary environment, so the first connected environment that
- * supports it is the reference value. Edits fan out to every connected
- * environment, and a mismatch row lets the user push the reference out.
+ * has no primary environment, so the first eligible sync target provides the
+ * reference value. Edits fan out to every eligible target, and a mismatch row
+ * lets the user push the reference out.
  */
 function AutoSettleSettingsRows() {
   const { environments } = useEnvironments();
@@ -567,13 +565,8 @@ function AutoSettleSettingsRows() {
     reportFailure: true,
   });
 
-  const supportsSharedSettings = (environment: (typeof environments)[number]) =>
-    supportsSharedSettingsSync({
-      connectionPhase: environment.connection.phase,
-      capabilities: environment.serverConfig?.environment.capabilities ?? null,
-    });
-  const connected = environments.filter(supportsSharedSettings);
-  const reference = connected[0] ?? null;
+  const syncTargets = environments.filter(supportsSharedSettingsSync);
+  const reference = syncTargets[0] ?? null;
   const referenceSettings = reference?.serverConfig?.settings ?? null;
 
   const [daysDraft, setDaysDraft] = useState<string | null>(null);
@@ -583,7 +576,7 @@ function AutoSettleSettingsRows() {
   }
 
   const writeToAll = (patch: ServerSettingsPatch) => {
-    for (const environment of connected) {
+    for (const environment of syncTargets) {
       void updateSettings({ environmentId: environment.environmentId, input: { patch } });
     }
   };
@@ -594,7 +587,7 @@ function AutoSettleSettingsRows() {
     environments: environments.map((environment) => ({
       environmentId: environment.environmentId,
       label: environment.label,
-      connected: supportsSharedSettings(environment),
+      syncEligible: supportsSharedSettingsSync(environment),
       settings: environment.serverConfig?.settings ?? null,
     })),
   });
@@ -604,7 +597,7 @@ function AutoSettleSettingsRows() {
     const draft = (daysDraft ?? "").trim();
     setDaysDraft(null);
     // Whole-string check so "3.5" and "3days" are rejected instead of
-    // silently becoming 3 on every connected environment.
+    // silently becoming 3 on every eligible sync target.
     const parsed = /^\d+$/.test(draft) ? Number(draft) : Number.NaN;
     if (
       Number.isInteger(parsed) &&
