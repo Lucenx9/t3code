@@ -19,6 +19,7 @@ import { createProviderVersionAdvisory } from "./providerMaintenance.ts";
 import { collectUint8StreamText } from "../stream/collectUint8StreamText.ts";
 
 export const DEFAULT_TIMEOUT_MS = 4_000;
+const DEFAULT_PROVIDER_COMMAND_MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
 // Auth status checks involve disk/network lookups and can be slow on first run (especially Windows)
 export const AUTH_PROBE_TIMEOUT_MS = 10_000;
 
@@ -257,4 +258,7 @@ export const collectStreamAsString = <E>(
   stream: Stream.Stream<Uint8Array, E>,
   options?: { readonly maxBytes?: number | undefined },
 ): Effect.Effect<string, E> =>
-  collectUint8StreamText({ stream, ...options }).pipe(Effect.map((collected) => collected.text));
+  collectUint8StreamText({
+    stream,
+    maxBytes: options?.maxBytes ?? DEFAULT_PROVIDER_COMMAND_MAX_OUTPUT_BYTES,
+  }).pipe(Effect.map((collected) => collected.text));

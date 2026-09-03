@@ -72,6 +72,41 @@ describe("providerModelsFromSettings", () => {
   });
 });
 
+describe("provider command collection", () => {
+  it.effect("bounds provider command output by default", () => {
+    const maxOutputBytes = 8 * 1024 * 1024;
+    const spawner = ChildProcessSpawner.make(() =>
+      Effect.succeed(
+        ChildProcessSpawner.makeHandle({
+          pid: ChildProcessSpawner.ProcessId(1),
+          exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(0)),
+          isRunning: Effect.succeed(false),
+          kill: () => Effect.void,
+          unref: Effect.succeed(Effect.void),
+          stdin: Sink.drain,
+          stdout: Stream.make(new Uint8Array(maxOutputBytes + 1).fill(120)),
+          stderr: Stream.empty,
+          all: Stream.empty,
+          getInputFd: () => Sink.drain,
+          getOutputFd: () => Stream.empty,
+        }),
+      ),
+    );
+
+    return Effect.gen(function* () {
+      const result = yield* spawnAndCollect(
+        "provider",
+        ChildProcess.make("provider", ["--version"]),
+      ).pipe(
+        Effect.provide(Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner)),
+        Effect.provideService(HostProcessPlatform, "linux"),
+      );
+
+      expect(Buffer.byteLength(result.stdout)).toBe(maxOutputBytes);
+    });
+  });
+});
+
 describe("ProviderCommandNotFoundError", () => {
   it("classifies normalized platform failures without parsing messages", () => {
     expect(
