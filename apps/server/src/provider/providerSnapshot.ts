@@ -43,6 +43,17 @@ export class ProviderCommandNotFoundError extends Schema.TaggedErrorClass<Provid
   }
 }
 
+export class ProviderCommandOutputLimitError extends Schema.TaggedErrorClass<ProviderCommandOutputLimitError>()(
+  "ProviderCommandOutputLimitError",
+  {
+    maxBytes: Schema.Number,
+  },
+) {
+  override get message(): string {
+    return `Provider command output exceeded the ${this.maxBytes} byte limit.`;
+  }
+}
+
 const isProviderCommandNotFoundError = Schema.is(ProviderCommandNotFoundError);
 
 export interface ProviderProbeResult {
@@ -77,22 +88,21 @@ export const spawnAndCollect = (binaryPath: string, command: ChildProcess.Comman
   Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const child = yield* spawner.spawn(command);
-    const [stdout, stderr, exitCode] = yield* Effect.all(
+    const [output, exitCode] = yield* Effect.all(
       [
-        collectStreamAsString(child.stdout),
-        collectStreamAsString(child.stderr),
+        collectProviderCommandOutput({ stdout: child.stdout, stderr: child.stderr }),
         child.exitCode.pipe(Effect.map(Number)),
       ],
       { concurrency: "unbounded" },
     );
 
-    const result: CommandResult = { stdout, stderr, code: exitCode };
-    if (yield* isWindowsCommandNotFound(exitCode, stderr)) {
+    const result: CommandResult = { ...output, code: exitCode };
+    if (yield* isWindowsCommandNotFound(exitCode, output.stderr)) {
       return yield* new ProviderCommandNotFoundError({
         binaryPath,
         exitCode,
-        stdoutLength: stdout.length,
-        stderrLength: stderr.length,
+        stdoutLength: output.stdout.length,
+        stderrLength: output.stderr.length,
       });
     }
     return result;
@@ -254,11 +264,23 @@ export function buildServerProvider(input: {
   };
 }
 
-export const collectStreamAsString = <E>(
-  stream: Stream.Stream<Uint8Array, E>,
-  options?: { readonly maxBytes?: number | undefined },
-): Effect.Effect<string, E> =>
-  collectUint8StreamText({
-    stream,
-    maxBytes: options?.maxBytes ?? DEFAULT_PROVIDER_COMMAND_MAX_OUTPUT_BYTES,
-  }).pipe(Effect.map((collected) => collected.text));
+export const collectProviderCommandOutput = Effect.fn(
+  "providerSnapshot.collectProviderCommandOutput",
+)(function* <StdoutError, StderrError>(input: {
+  readonly stdout: Stream.Stream<Uint8Array, StdoutError>;
+  readonly stderr: Stream.Stream<Uint8Array, StderrError>;
+  readonly maxBytes?: number | undefined;
+}) {
+  const maxBytes = input.maxBytes ?? DEFAULT_PROVIDER_COMMAND_MAX_OUTPUT_BYTES;
+  const [stdout, stderr] = yield* Effect.all(
+    [
+      collectUint8StreamText({ stream: input.stdout, maxBytes }),
+      collectUint8StreamText({ stream: input.stderr, maxBytes }),
+    ],
+    { concurrency: "unbounded" },
+  );
+  if (stdout.truncated || stderr.truncated) {
+    return yield* new ProviderCommandOutputLimitError({ maxBytes });
+  }
+  return { stdout: stdout.text, stderr: stderr.text };
+});

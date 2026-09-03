@@ -73,8 +73,9 @@ describe("providerModelsFromSettings", () => {
 });
 
 describe("provider command collection", () => {
-  it.effect("bounds provider command output by default", () => {
+  it.effect("fails after draining provider command output that exceeds the default limit", () => {
     const maxOutputBytes = 8 * 1024 * 1024;
+    let stdoutChunksRead = 0;
     const spawner = ChildProcessSpawner.make(() =>
       Effect.succeed(
         ChildProcessSpawner.makeHandle({
@@ -84,7 +85,11 @@ describe("provider command collection", () => {
           kill: () => Effect.void,
           unref: Effect.succeed(Effect.void),
           stdin: Sink.drain,
-          stdout: Stream.make(new Uint8Array(maxOutputBytes + 1).fill(120)),
+          stdout: Stream.fromIterable([
+            new Uint8Array(maxOutputBytes).fill(120),
+            Uint8Array.of(120),
+            Uint8Array.of(120),
+          ]).pipe(Stream.tap(() => Effect.sync(() => stdoutChunksRead++))),
           stderr: Stream.empty,
           all: Stream.empty,
           getInputFd: () => Sink.drain,
@@ -94,15 +99,26 @@ describe("provider command collection", () => {
     );
 
     return Effect.gen(function* () {
-      const result = yield* spawnAndCollect(
+      const error = yield* spawnAndCollect(
         "provider",
         ChildProcess.make("provider", ["--version"]),
       ).pipe(
         Effect.provide(Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner)),
         Effect.provideService(HostProcessPlatform, "linux"),
+        Effect.match({
+          onFailure: (error) => error,
+          onSuccess: () => null,
+        }),
       );
 
-      expect(Buffer.byteLength(result.stdout)).toBe(maxOutputBytes);
+      if (error === null) {
+        return expect.fail("Expected provider command collection to fail on output overflow");
+      }
+      expect(error).toMatchObject({
+        _tag: "ProviderCommandOutputLimitError",
+        maxBytes: maxOutputBytes,
+      });
+      expect(stdoutChunksRead).toBe(3);
     });
   });
 });

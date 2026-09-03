@@ -34,7 +34,7 @@ import {
   buildBooleanOptionDescriptor,
   buildSelectOptionDescriptor,
   buildServerProvider,
-  collectStreamAsString,
+  collectProviderCommandOutput,
   isCommandMissingCause,
   providerModelsFromSettings,
   type CommandResult,
@@ -959,16 +959,15 @@ const runCursorCommand = (
     });
 
     const child = yield* spawner.spawn(command);
-    const [stdout, stderr, exitCode] = yield* Effect.all(
+    const [output, exitCode] = yield* Effect.all(
       [
-        collectStreamAsString(child.stdout),
-        collectStreamAsString(child.stderr),
+        collectProviderCommandOutput({ stdout: child.stdout, stderr: child.stderr }),
         child.exitCode.pipe(Effect.map(Number)),
       ],
       { concurrency: "unbounded" },
     );
 
-    return { stdout, stderr, code: exitCode } satisfies CommandResult;
+    return { ...output, code: exitCode } satisfies CommandResult;
   }).pipe(Effect.scoped);
 
 const runCursorAboutCommand = (cursorSettings: CursorSettings, environment?: NodeJS.ProcessEnv) =>

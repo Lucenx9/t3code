@@ -93,7 +93,12 @@ exec ${mockAgentCommand} "$@"
   return wrapperPath;
 });
 
-const makeMockAgentWithAboutWrapper = Effect.fn("makeMockAgentWithAboutWrapper")(function* () {
+const makeMockAgentWithAboutWrapper = Effect.fn("makeMockAgentWithAboutWrapper")(function* (
+  aboutCommand = [
+    "printf 'CLI Version         2026.04.09-f2b0fcd\\n'",
+    "printf 'User Email          cursor@example.com\\n'",
+  ].join("\n"),
+) {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const mockAgentPath = yield* resolveMockAgentPath();
@@ -105,8 +110,7 @@ const makeMockAgentWithAboutWrapper = Effect.fn("makeMockAgentWithAboutWrapper")
   const mockAgentCommand = ["node", mockAgentPath].map((arg) => JSON.stringify(arg)).join(" ");
   const script = `#!/bin/sh
 if [ "$1" = "about" ]; then
-  printf 'CLI Version         2026.04.09-f2b0fcd\\n'
-  printf 'User Email          cursor@example.com\\n'
+  ${aboutCommand}
   exit 0
 fi
 exec ${mockAgentCommand} "$@"
@@ -569,6 +573,30 @@ describe("checkCursorProviderStatus", () => {
       "claude-opus-4-6",
     ]);
     await expect(runNode(waitForFileContent(requestLogPath))).resolves.toContain("initialize");
+  });
+
+  it("rejects truncated about output instead of parsing it", async () => {
+    const overflowBytes = 8 * 1024 * 1024 + 1;
+    const wrapperPath = await runNode(
+      makeMockAgentWithAboutWrapper(
+        `exec node -e 'process.stdout.write("x".repeat(${overflowBytes}))'`,
+      ),
+    );
+
+    const provider = await runNode(
+      checkCursorProviderStatus({
+        enabled: true,
+        binaryPath: wrapperPath,
+        apiEndpoint: "",
+        customModels: [],
+      }),
+    );
+
+    expect(provider).toMatchObject({
+      installed: true,
+      status: "error",
+      message: "Failed to execute Cursor Agent CLI health check.",
+    });
   });
 });
 

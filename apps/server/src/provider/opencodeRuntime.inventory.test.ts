@@ -116,7 +116,7 @@ it.layer(testLayer)("OpenCodeRuntime inventory", (it) => {
     }),
   );
 
-  it.effect("drops oversized CLI skill output without losing the model inventory", () =>
+  it.effect("does not retry oversized CLI skill output or lose the model inventory", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -127,11 +127,14 @@ it.layer(testLayer)("OpenCodeRuntime inventory", (it) => {
       const isWindows = hostPlatform === "win32";
       const binaryPath = path.join(tempDir, isWindows ? "opencode.cmd" : "opencode");
       const scriptPath = path.join(tempDir, "opencode.mjs");
+      const invocationLogPath = path.join(tempDir, "invocations.log");
       const oversizedContentBytes = 8 * 1024 * 1024 + 1;
 
       yield* fs.writeFileString(
         scriptPath,
         [
+          'import { appendFileSync } from "node:fs";',
+          "appendFileSync(process.env.T3_TEST_OPENCODE_INVOCATION_LOG, `${process.argv[2]}\\n`);",
           'if (process.argv[2] === "models") {',
           '  process.stdout.write(`openai/gpt-test\\n{"id":"gpt-test","providerID":"openai","name":"GPT Test"}\\n`);',
           '} else if (process.argv[2] === "debug") {',
@@ -163,31 +166,35 @@ it.layer(testLayer)("OpenCodeRuntime inventory", (it) => {
           ...hostEnvironment,
           T3_TEST_NODE_BINARY: executablePath,
           T3_TEST_OPENCODE_SCRIPT: scriptPath,
+          T3_TEST_OPENCODE_INVOCATION_LOG: invocationLogPath,
         },
       });
 
       NodeAssert.deepEqual(inventory.providerList.connected, ["openai"]);
       NodeAssert.equal(inventory.skills.length, 0);
+      const invocations = (yield* fs.readFileString(invocationLogPath)).trim().split("\n");
+      NodeAssert.equal(invocations.filter((command) => command === "debug").length, 1);
     }),
   );
 
-  it.effect("caps and drains command stdout and stderr when requested", () =>
+  it.effect("fails after draining command stdout and stderr that exceed the limit", () =>
     Effect.gen(function* () {
       const runtime = yield* OpenCodeRuntime;
       const executablePath = yield* HostProcessExecutablePath;
       const outputBytes = 2 * 1024 * 1024;
-      const result = yield* runtime.runOpenCodeCommand({
-        binaryPath: executablePath,
-        args: [
-          "-e",
-          `process.stdout.write("o".repeat(${outputBytes})); process.stderr.write("e".repeat(${outputBytes}));`,
-        ],
-        maxOutputBytes: 64,
-      });
+      const error = yield* runtime
+        .runOpenCodeCommand({
+          binaryPath: executablePath,
+          args: [
+            "-e",
+            `process.stdout.write("o".repeat(${outputBytes})); process.stderr.write("e".repeat(${outputBytes}));`,
+          ],
+          maxOutputBytes: 64,
+        })
+        .pipe(Effect.flip);
 
-      NodeAssert.equal(result.stdout, "o".repeat(64));
-      NodeAssert.equal(result.stderr, "e".repeat(64));
-      NodeAssert.equal(result.code, 0);
+      NodeAssert.equal(error._tag, "OpenCodeRuntimeError");
+      NodeAssert.match(error.detail, /output exceeded the 64 byte limit/);
     }),
   );
 });

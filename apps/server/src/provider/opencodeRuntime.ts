@@ -30,7 +30,10 @@ import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import { isWindowsCommandNotFound } from "../processRunner.ts";
-import { collectStreamAsString } from "./providerSnapshot.ts";
+import {
+  collectProviderCommandOutput,
+  ProviderCommandOutputLimitError,
+} from "./providerSnapshot.ts";
 import * as NetService from "@t3tools/shared/Net";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { compareSemverVersions, parseSemver } from "@t3tools/shared/semver";
@@ -551,6 +554,16 @@ function ensureRuntimeError(
     : new OpenCodeRuntimeError({ operation, detail, cause });
 }
 
+const isProviderCommandOutputLimitError = Schema.is(ProviderCommandOutputLimitError);
+
+function shouldRetryInventoryCommand(
+  result: Exit.Exit<OpenCodeCommandResult, OpenCodeRuntimeError>,
+) {
+  if (Exit.isSuccess(result)) return result.value.code !== 0;
+  const error = Cause.squash(result.cause);
+  return !(OpenCodeRuntimeError.is(error) && isProviderCommandOutputLimitError(error.cause));
+}
+
 const makeOpenCodeRuntime = Effect.gen(function* () {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const netService = yield* NetService.NetService;
@@ -580,26 +593,26 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
               }
             });
       yield* Effect.addFinalizer(() => terminateCommandGroup.pipe(Effect.ignore));
-      const collectOptions =
-        input.maxOutputBytes === undefined ? undefined : { maxBytes: input.maxOutputBytes };
-      const [stdout, stderr, code] = yield* Effect.all(
+      const [output, code] = yield* Effect.all(
         [
-          collectStreamAsString(child.stdout, collectOptions),
-          collectStreamAsString(child.stderr, collectOptions),
+          collectProviderCommandOutput({
+            stdout: child.stdout,
+            stderr: child.stderr,
+            ...(input.maxOutputBytes === undefined ? {} : { maxBytes: input.maxOutputBytes }),
+          }),
           child.exitCode,
         ],
         { concurrency: "unbounded" },
       );
       const exitCode = Number(code);
-      if (yield* isWindowsCommandNotFound(exitCode, stderr)) {
+      if (yield* isWindowsCommandNotFound(exitCode, output.stderr)) {
         return yield* new OpenCodeRuntimeError({
           operation: "runOpenCodeCommand",
           detail: `spawn ${input.binaryPath} ENOENT`,
         });
       }
       return {
-        stdout,
-        stderr,
+        ...output,
         code: exitCode,
       } satisfies OpenCodeCommandResult;
     }).pipe(
@@ -928,9 +941,9 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
       let skillsResult = initialSkillsResult;
 
       // Retry once after 1s on transient failures (e.g. SQLite "database is locked")
-      const needsModelsRetry = modelsResult._tag === "Failure" || modelsResult.value.code !== 0;
-      const needsAgentsRetry = agentsResult._tag === "Failure" || agentsResult.value.code !== 0;
-      const needsSkillsRetry = skillsResult._tag === "Failure" || skillsResult.value.code !== 0;
+      const needsModelsRetry = shouldRetryInventoryCommand(modelsResult);
+      const needsAgentsRetry = shouldRetryInventoryCommand(agentsResult);
+      const needsSkillsRetry = shouldRetryInventoryCommand(skillsResult);
       if (needsModelsRetry || needsAgentsRetry || needsSkillsRetry) {
         yield* Effect.sleep("1 second");
         const [m2, a2, s2] = yield* Effect.all(
