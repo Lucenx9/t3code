@@ -61,6 +61,15 @@ describe("semver helpers", () => {
     expect(normalizeSemverVersion("1.2.3-alpha-1+build")).toBe("1.2.3-alpha-1");
     expect(parseSemver("1.2.3-alpha-1+build")?.prerelease).toEqual(["alpha-1"]);
     expect(compareSemverVersions("1.2.3-alpha-1+one", "1.2.3-alpha-1+two")).toBe(0);
+    expect(compareSemverVersions("1.0.0+build.1", "1.0.0")).toBe(0);
+  });
+
+  it("keeps malformed build metadata unparseable", () => {
+    // Regression (Codex review on this PR): only a nonempty dot-separated
+    // sequence of valid identifiers may be ignored for precedence.
+    expect(parseSemver("1.2.3+")).toBeNull();
+    expect(parseSemver("1.2.3+not valid")).toBeNull();
+    expect(normalizeSemverVersion("1.2.3+build.1")).toBe("1.2.3");
   });
 
   it("falls back to lexical comparison for malformed numeric segments", () => {

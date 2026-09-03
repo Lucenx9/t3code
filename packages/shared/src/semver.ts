@@ -7,17 +7,22 @@ interface ParsedSemver {
 
 const SEMVER_NUMBER_SEGMENT = /^\d+$/;
 
-// Split on the first hyphen only: prerelease identifiers may themselves
-// contain hyphens ("1.2.3-alpha-1"), which split("-", 2) would discard.
-// Build metadata ("+...") never affects precedence, so strip it first,
-// matching compareExactServiceVersions in serviceProtocol.ts.
+// Build metadata ("+...") never affects precedence. Strip it when it is a
+// nonempty dot-separated sequence of valid identifiers; a malformed suffix
+// keeps the version unparseable downstream, as before.
+const SEMVER_BUILD_IDENTIFIER = /^[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*$/;
+
 function splitMainPrerelease(version: string): [main: string, prerelease: string | undefined] {
-  const withoutBuild = version.split("+", 1)[0] ?? version;
-  const dash = withoutBuild.indexOf("-");
-  if (dash < 0) {
-    return [withoutBuild, undefined];
+  const plus = version.indexOf("+");
+  if (plus >= 0 && !SEMVER_BUILD_IDENTIFIER.test(version.slice(plus + 1))) {
+    return [version, undefined];
   }
-  return [withoutBuild.slice(0, dash), withoutBuild.slice(dash + 1)];
+  const core = plus < 0 ? version : version.slice(0, plus);
+  const dash = core.indexOf("-");
+  if (dash < 0) {
+    return [core, undefined];
+  }
+  return [core.slice(0, dash), core.slice(dash + 1)];
 }
 
 export function normalizeSemverVersion(version: string): string {
