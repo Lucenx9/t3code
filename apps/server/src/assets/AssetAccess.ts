@@ -42,7 +42,7 @@ import { parseAttachmentFileExtension, resolveAttachmentPathById } from "../atta
 import * as ServerConfig from "../config.ts";
 import * as ProjectFaviconResolver from "../project/ProjectFaviconResolver.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
-import { openMediaFile, type OpenMediaFile } from "./MediaFile.ts";
+import { openMediaFile, readMediaFile, type OpenMediaFile } from "./MediaFile.ts";
 
 export const ASSET_ROUTE_PREFIX = "/api/assets";
 
@@ -152,6 +152,11 @@ function decodeRelativePath(value: string): string | null {
   }
 }
 
+function hasImageFileExtension(path: Path.Path, filePath: string): boolean {
+  const fileName = path.basename(filePath).toLowerCase();
+  return WORKSPACE_IMAGE_PREVIEW_EXTENSIONS.some((extension) => fileName.endsWith(extension));
+}
+
 const optionOnNotFound = <A, R>(
   effect: Effect.Effect<A, PlatformError.PlatformError, R>,
 ): Effect.Effect<Option.Option<A>, PlatformError.PlatformError, R> =>
@@ -172,6 +177,13 @@ const resolveCanonicalFile = Effect.fn("AssetAccess.resolveCanonicalFile")(funct
 
   const info = yield* optionOnNotFound(fileSystem.stat(canonicalFile.value));
   return Option.isSome(info) && info.value.type === "File" ? canonicalFile.value : null;
+});
+
+const readCanonicalFileBytes = Effect.fn("AssetAccess.readCanonicalFileBytes")(function* (
+  filePath: string,
+) {
+  const file = yield* openMediaFile(filePath);
+  return file ? yield* readMediaFile(filePath, file) : null;
 });
 
 const resolveCanonicalWorkspaceFile = Effect.fn("AssetAccess.resolveCanonicalWorkspaceFile")(
@@ -430,7 +442,7 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
       const relativePath =
         faviconPath && !isExternalOverride ? path.relative(workspaceRoot, faviconPath) : null;
       const sourceFaviconPath = isExternalOverride ? faviconPath : relativePath;
-      if (sourceFaviconPath && !isWorkspaceImagePreviewPath(sourceFaviconPath)) {
+      if (sourceFaviconPath && !hasImageFileExtension(path, sourceFaviconPath)) {
         return yield* new AssetPreviewTypeValidationError({ resource: input.resource });
       }
       sourcePath = sourceFaviconPath ?? undefined;
@@ -453,6 +465,13 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
         return yield* new AssetProjectFaviconNotFoundError({
           resource: input.resource,
         });
+      }
+      if (
+        isExternalOverride &&
+        canonicalFaviconPath &&
+        !hasImageFileExtension(path, canonicalFaviconPath)
+      ) {
+        return yield* new AssetPreviewTypeValidationError({ resource: input.resource });
       }
       claims =
         isExternalOverride && canonicalFaviconPath
@@ -479,15 +498,29 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
             };
       if (sourceFaviconPath && canonicalFaviconPath) {
         const crypto = yield* Crypto.Crypto;
-        const faviconBytes = yield* fileSystem.readFile(canonicalFaviconPath).pipe(
-          Effect.mapError(
-            (cause) =>
-              new AssetProjectFaviconInspectionError({
-                resource: input.resource,
-                cause,
-              }),
-          ),
-        );
+        const faviconBytes = isExternalOverride
+          ? yield* readCanonicalFileBytes(canonicalFaviconPath).pipe(
+              Effect.scoped,
+              Effect.mapError(
+                (cause) =>
+                  new AssetProjectFaviconInspectionError({
+                    resource: input.resource,
+                    cause,
+                  }),
+              ),
+            )
+          : yield* fileSystem.readFile(canonicalFaviconPath).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new AssetProjectFaviconInspectionError({
+                    resource: input.resource,
+                    cause,
+                  }),
+              ),
+            );
+        if (!faviconBytes) {
+          return yield* new AssetProjectFaviconNotFoundError({ resource: input.resource });
+        }
         const revision = yield* crypto.digest("SHA-256", faviconBytes).pipe(
           Effect.map(Encoding.encodeHex),
           Effect.mapError(
@@ -589,18 +622,18 @@ export const resolveAsset = Effect.fn("AssetAccess.resolveAsset")(function* (
   }
 
   if (claims.kind === "project-favicon-external") {
-    const faviconPath = yield* resolveCanonicalFile(claims.filePath).pipe(
+    const path = yield* Path.Path;
+    if (!hasImageFileExtension(path, claims.filePath)) return null;
+    const file = yield* openMediaFile(claims.filePath).pipe(
       Effect.tapError((cause) =>
-        Effect.logError("Failed to resolve canonical asset path.", {
+        Effect.logError("Failed to open canonical asset path.", {
           filePath: claims.filePath,
           cause,
         }),
       ),
       Effect.orElseSucceed(() => null),
     );
-    return faviconPath === claims.filePath
-      ? ({ kind: "file", path: faviconPath } satisfies ResolvedAsset)
-      : null;
+    return file ? ({ kind: "file", path: claims.filePath, file } satisfies ResolvedAsset) : null;
   }
 
   const decodedPath = decodeRelativePath(relativePath);

@@ -31,6 +31,18 @@ class MediaFileStatError extends Schema.TaggedErrorClass<MediaFileStatError>()(
   }
 }
 
+class MediaFileReadError extends Schema.TaggedErrorClass<MediaFileReadError>()(
+  "MediaFileReadError",
+  {
+    path: Schema.String,
+    cause: Schema.Defect(),
+  },
+) {
+  override get message(): string {
+    return `Failed to read media file '${this.path}'.`;
+  }
+}
+
 /** Holds the file identity and descriptor for one HTTP request, never a copy of its bytes. */
 export interface OpenMediaFile {
   readonly handle: NodeFSP.FileHandle;
@@ -93,6 +105,16 @@ export const statMediaFile = Effect.fn("statMediaFile")(function* (
   return yield* Effect.tryPromise({
     try: () => file.handle.stat({ bigint: true }),
     catch: (cause) => new MediaFileStatError({ path: filePath, cause }),
+  });
+});
+
+export const readMediaFile = Effect.fn("readMediaFile")(function* (
+  filePath: string,
+  file: OpenMediaFile,
+) {
+  return yield* Effect.tryPromise({
+    try: () => file.handle.readFile(),
+    catch: (cause) => new MediaFileReadError({ path: filePath, cause }),
   });
 });
 

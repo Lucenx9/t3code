@@ -2,7 +2,11 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeHttpPlatform from "@effect/platform-node/NodeHttpPlatform";
 import * as NodeFSP from "node:fs/promises";
-import { AssetPreviewTypeValidationError, ThreadId } from "@t3tools/contracts";
+import {
+  AssetPreviewTypeValidationError,
+  AssetProjectFaviconInspectionError,
+  ThreadId,
+} from "@t3tools/contracts";
 import { PROJECT_FAVICON_FALLBACK_MARKER } from "@t3tools/shared/projectFavicon";
 import { describe, expect, it } from "@effect/vitest";
 import * as Crypto from "effect/Crypto";
@@ -11,11 +15,13 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
+import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
 import { HttpServerResponse } from "effect/unstable/http";
 import { vi } from "vite-plus/test";
 
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
+import { base64UrlEncode, signPayload } from "../auth/utils.ts";
 import * as ServerConfig from "../config.ts";
 import * as ProjectFaviconResolver from "../project/ProjectFaviconResolver.ts";
 import * as T3ProjectFileLoader from "../project/T3ProjectFileLoader.ts";
@@ -42,6 +48,16 @@ const testLayer = Layer.mergeAll(
   ),
   ServerSecretStore.layer.pipe(Layer.provide(configLayer)),
 ).pipe(Layer.provideMerge(NodeServices.layer));
+
+const LegacyExternalProjectFaviconClaims = Schema.Struct({
+  version: Schema.Literal(1),
+  kind: Schema.Literal("project-favicon-external"),
+  filePath: Schema.String,
+  expiresAt: Schema.Number,
+});
+const encodeLegacyExternalProjectFaviconClaims = Schema.encodeEffect(
+  Schema.fromJsonString(LegacyExternalProjectFaviconClaims),
+);
 
 describe("AssetAccess", () => {
   it.effect("issues exact URLs for media and browser documents outside the workspace", () =>
@@ -744,13 +760,157 @@ describe("AssetAccess", () => {
       expect(result.relativeUrl).toMatch(/\/v[0-9a-f]{64}-custom\.png$/);
       expect(
         yield* resolveAsset(suffix.slice(0, separatorIndex), suffix.slice(separatorIndex + 1)),
-      ).toEqual({ kind: "file", path: canonicalPath });
+      ).toMatchObject({ kind: "file", path: canonicalPath });
       const tamperedSuffixResult = yield* resolveAsset(
         suffix.slice(0, separatorIndex),
         "sibling.png",
       );
-      expect(tamperedSuffixResult).toEqual({ kind: "file", path: canonicalPath });
-      expect(tamperedSuffixResult).not.toEqual({ kind: "file", path: canonicalSiblingPath });
+      expect(tamperedSuffixResult).toMatchObject({ kind: "file", path: canonicalPath });
+      expect(tamperedSuffixResult?.path).not.toBe(canonicalSiblingPath);
+
+      const dotfilePath = path.join(pictures, ".png");
+      yield* fileSystem.writeFile(dotfilePath, new Uint8Array([7, 8, 9]));
+      const dotfileResult = yield* issueAssetUrl({
+        resource: { _tag: "project-favicon", cwd: root },
+        projectFaviconPath: dotfilePath,
+      });
+      expect(dotfileResult.relativeUrl).toMatch(/\/v[0-9a-f]{64}-\.png$/);
+    }).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("keeps external favicon responses bound to the resolved file", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-asset-favicon-response-workspace-",
+      });
+      const pictures = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-asset-favicon-response-pictures-",
+      });
+      const faviconPath = path.join(pictures, "custom.png");
+      const savedPath = path.join(pictures, "saved.png");
+      const secretPath = path.join(pictures, "secret.txt");
+      yield* fileSystem.writeFileString(faviconPath, "favicon");
+      yield* fileSystem.writeFileString(secretPath, "private");
+
+      const result = yield* issueAssetUrl({
+        resource: { _tag: "project-favicon", cwd: root },
+        projectFaviconPath: faviconPath,
+      });
+      const suffix = result.relativeUrl.slice(`${ASSET_ROUTE_PREFIX}/`.length);
+      const separatorIndex = suffix.indexOf("/");
+      const asset = yield* resolveAsset(
+        suffix.slice(0, separatorIndex),
+        suffix.slice(separatorIndex + 1),
+      );
+      if (!asset) throw new Error("Expected a resolved project favicon");
+
+      yield* fileSystem.rename(faviconPath, savedPath);
+      yield* fileSystem.symlink(secretPath, faviconPath);
+      const response = HttpServerResponse.toWeb(yield* assetFileResponse(asset));
+      expect(yield* Effect.promise(() => response.text())).toBe("favicon");
+    }).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("keeps file context when reading an external favicon fails", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-asset-favicon-read-workspace-",
+      });
+      const pictures = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-asset-favicon-read-pictures-",
+      });
+      const faviconPath = path.join(pictures, "custom.png");
+      yield* fileSystem.writeFileString(faviconPath, "favicon");
+      const canonicalPath = yield* fileSystem.realPath(faviconPath);
+      const readFailure = new Error("read failed");
+      const originalOpen = (yield* Effect.promise(() =>
+        vi.importActual<typeof NodeFSP>("node:fs/promises"),
+      )).open;
+      let opened: NodeFSP.FileHandle | undefined;
+      const openSpy = vi.mocked(NodeFSP.open).mockImplementation(async (target, flags, mode) => {
+        const handle = await originalOpen(target, flags, mode);
+        if (target === canonicalPath) {
+          opened = handle;
+          vi.spyOn(handle, "readFile").mockRejectedValue(readFailure);
+        }
+        return handle;
+      });
+      yield* Effect.addFinalizer(() => Effect.sync(() => openSpy.mockImplementation(originalOpen)));
+
+      const error = yield* issueAssetUrl({
+        resource: { _tag: "project-favicon", cwd: root },
+        projectFaviconPath: faviconPath,
+      }).pipe(Effect.flip);
+
+      const isInspectionError = Schema.is(AssetProjectFaviconInspectionError);
+      expect(isInspectionError(error)).toBe(true);
+      if (!isInspectionError(error)) return;
+      expect(error.cause).toMatchObject({
+        _tag: "MediaFileReadError",
+        path: canonicalPath,
+        cause: readFailure,
+      });
+      expect(opened?.fd).toBe(-1);
+    }).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("rejects external favicon paths with non-image source or target names", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-asset-favicon-symlink-workspace-",
+      });
+      const outside = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-asset-favicon-symlink-outside-",
+      });
+      for (const { sourceName, targetName } of [
+        { sourceName: "leak.png", targetName: "secret.txt" },
+        { sourceName: "fragment-target.png", targetName: "secret.png#private.txt" },
+        { sourceName: "fragment-source.png#ignored", targetName: "target.png" },
+      ]) {
+        const secretPath = path.join(outside, targetName);
+        const faviconPath = path.join(root, sourceName);
+        yield* fileSystem.writeFileString(secretPath, "private");
+        yield* fileSystem.symlink(secretPath, faviconPath);
+
+        const error = yield* issueAssetUrl({
+          resource: { _tag: "project-favicon", cwd: root },
+          projectFaviconPath: faviconPath,
+        }).pipe(Effect.flip);
+
+        expect(error).toBeInstanceOf(AssetPreviewTypeValidationError);
+      }
+    }).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("rejects existing external favicon tokens for non-image files", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const outside = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-asset-favicon-existing-token-",
+      });
+      const secretPath = path.join(outside, "secret.txt");
+      yield* fileSystem.writeFileString(secretPath, "private");
+
+      const secretStore = yield* ServerSecretStore.ServerSecretStore;
+      const secret = yield* secretStore.getOrCreateRandom("asset-access-signing-key", 32);
+      const encodedPayload = base64UrlEncode(
+        yield* encodeLegacyExternalProjectFaviconClaims({
+          version: 1,
+          kind: "project-favicon-external",
+          filePath: yield* fileSystem.realPath(secretPath),
+          expiresAt: 60 * 60 * 1000,
+        }),
+      );
+      const token = `${encodedPayload}.${signPayload(encodedPayload, secret)}`;
+
+      expect(yield* resolveAsset(token, "leak.png")).toBeNull();
     }).pipe(Effect.provide(testLayer)),
   );
 
