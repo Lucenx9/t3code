@@ -28,7 +28,7 @@ const WSL_DISTRO_NAME_PATTERN = /^[A-Za-z0-9._-]+$/;
 const WSL_DEFAULT_BACKEND_ID = "wsl:default";
 
 export function parseWslUncPath(input: string): WslUncPath | null {
-  const normalized = input.trim().replaceAll("/", "\\");
+  const normalized = input.replaceAll("/", "\\");
   const prefix = WSL_UNC_PREFIXES.find((candidate) =>
     normalized.toLowerCase().startsWith(candidate.toLowerCase()),
   );

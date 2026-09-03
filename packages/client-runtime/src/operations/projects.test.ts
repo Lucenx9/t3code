@@ -165,6 +165,29 @@ describe("add project shared logic", () => {
     });
   });
 
+  it("classifies padded paths before dispatch", () => {
+    expect(
+      resolveAddProjectPath({
+        rawPath: " C:\\repo ",
+        platform: "Linux",
+        currentProjectCwd: null,
+      }),
+    ).toEqual({
+      ok: false,
+      error: "Windows-style paths are only supported on Windows environments.",
+    });
+    expect(
+      resolveAddProjectPath({
+        rawPath: " ../repo ",
+        platform: "Linux",
+        currentProjectCwd: null,
+      }),
+    ).toEqual({
+      ok: false,
+      error: "Relative paths require an active project in this environment.",
+    });
+  });
+
   it("resolves relative paths from the active project cwd", () => {
     expect(
       resolveAddProjectPath({

@@ -22,6 +22,13 @@ describe("parseWslUncPath", () => {
     });
   });
 
+  it("preserves trailing spaces in the Linux path", () => {
+    expect(parseWslUncPath("\\\\wsl.localhost\\Ubuntu\\home\\josh\\repo ")).toEqual({
+      distro: "Ubuntu",
+      linuxPath: "/home/josh/repo ",
+    });
+  });
+
   it("rejects non-WSL paths and invalid distro names", () => {
     expect(parseWslUncPath("C:\\Users\\Josh\\repo")).toBeNull();
     expect(parseWslUncPath("\\\\wsl.localhost\\bad!name\\home")).toBeNull();
@@ -39,6 +46,18 @@ describe("resolveWslProjectSelection", () => {
       distro: "Ubuntu",
       environmentId: "env-ubuntu",
       linuxPath: "/home/theo/repo",
+    });
+  });
+
+  it("preserves trailing spaces while routing a UNC path", () => {
+    expect(
+      resolveWslProjectSelection("\\\\wsl.localhost\\Ubuntu\\home\\theo\\repo ", [
+        { environmentId: "env-ubuntu", backendId: "wsl:Ubuntu", runningDistro: null },
+      ]),
+    ).toEqual({
+      distro: "Ubuntu",
+      environmentId: "env-ubuntu",
+      linuxPath: "/home/theo/repo ",
     });
   });
 

@@ -271,13 +271,14 @@ export function resolveAddProjectPath(input: {
   readonly platform: string;
 }): { readonly ok: true; readonly path: string } | { readonly ok: false; readonly error: string } {
   const rawPath = input.rawPath;
-  if (rawPath.trim().length === 0) {
+  const classifiedPath = rawPath.trim();
+  if (classifiedPath.length === 0) {
     return { ok: false, error: "Enter a project path." };
   }
-  if (isUnsupportedWindowsProjectPath(rawPath, input.platform)) {
+  if (isUnsupportedWindowsProjectPath(classifiedPath, input.platform)) {
     return { ok: false, error: "Windows-style paths are only supported on Windows environments." };
   }
-  if (isExplicitRelativeProjectPath(rawPath) && !input.currentProjectCwd) {
+  if (isExplicitRelativeProjectPath(classifiedPath) && !input.currentProjectCwd) {
     return { ok: false, error: "Relative paths require an active project in this environment." };
   }
   const path = resolveProjectPathForDispatch(rawPath, input.currentProjectCwd);
