@@ -152,7 +152,10 @@ export const make = Effect.gen(function* () {
   const normalizeWorkspaceRoot: WorkspacePaths["Service"]["normalizeWorkspaceRoot"] = Effect.fn(
     "WorkspacePaths.normalizeWorkspaceRoot",
   )(function* (workspaceRoot, options) {
-    const normalizedWorkspaceRoot = path.resolve(expandHomePathWith(workspaceRoot.trim(), path));
+    const workspaceRootInput = path.isAbsolute(workspaceRoot)
+      ? workspaceRoot
+      : workspaceRoot.trim();
+    const normalizedWorkspaceRoot = path.resolve(expandHomePathWith(workspaceRootInput, path));
     let workspaceStat = yield* statWorkspaceRoot(
       workspaceRoot,
       normalizedWorkspaceRoot,

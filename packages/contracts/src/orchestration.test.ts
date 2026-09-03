@@ -139,14 +139,14 @@ it.effect("rejects thread turn diff when fromTurnCount > toTurnCount", () =>
   }),
 );
 
-it.effect("trims branded ids and command string fields at decode boundaries", () =>
+it.effect("trims identifiers and labels but preserves workspace root whitespace", () =>
   Effect.gen(function* () {
     const parsed = yield* decodeProjectCreateCommand({
       type: "project.create",
       commandId: " cmd-1 ",
       projectId: " project-1 ",
       title: " Project Title ",
-      workspaceRoot: " /tmp/workspace ",
+      workspaceRoot: "/tmp/workspace ",
       defaultModelSelection: {
         provider: "codex",
         model: " gpt-5.2 ",
@@ -156,12 +156,29 @@ it.effect("trims branded ids and command string fields at decode boundaries", ()
     assert.strictEqual(parsed.commandId, "cmd-1");
     assert.strictEqual(parsed.projectId, "project-1");
     assert.strictEqual(parsed.title, "Project Title");
-    assert.strictEqual(parsed.workspaceRoot, "/tmp/workspace");
+    assert.strictEqual(parsed.workspaceRoot, "/tmp/workspace ");
     assert.strictEqual(parsed.createWorkspaceRootIfMissing, undefined);
     assert.deepStrictEqual(parsed.defaultModelSelection, {
       instanceId: ProviderInstanceId.make("codex"),
       model: "gpt-5.2",
     });
+  }),
+);
+
+it.effect("rejects blank workspace roots", () =>
+  Effect.gen(function* () {
+    const result = yield* Effect.exit(
+      decodeProjectCreateCommand({
+        type: "project.create",
+        commandId: "cmd-1",
+        projectId: "project-1",
+        title: "Project Title",
+        workspaceRoot: "   ",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      }),
+    );
+
+    assert.strictEqual(result._tag, "Failure");
   }),
 );
 

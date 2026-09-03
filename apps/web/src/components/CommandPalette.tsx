@@ -12,6 +12,7 @@ import {
   getCloneDirectoryName,
   getDefaultCloneUrl,
   normalizePastedCloneUrl,
+  resolveAddProjectPath,
 } from "@t3tools/client-runtime/operations/projects";
 import { connectionStatusText } from "@t3tools/client-runtime/connection";
 import { threadSearchMatchKey } from "@t3tools/client-runtime/state/thread-search";
@@ -1804,32 +1805,23 @@ function OpenCommandPaletteDialog(props: {
         );
         return;
       }
-      const rawCwd = input.rawCwd;
-
-      if (isUnsupportedWindowsProjectPath(rawCwd.trim(), input.platform)) {
+      const resolved = resolveAddProjectPath({
+        rawPath: input.rawCwd,
+        currentProjectCwd: input.currentProjectCwd,
+        platform: input.platform,
+      });
+      if (!resolved.ok) {
         toastManager.add(
           stackedThreadToast({
             type: "error",
             title: "Failed to add project",
-            description: "Windows-style paths are only supported on Windows.",
+            description: resolved.error,
           }),
         );
         return;
       }
 
-      if (isExplicitRelativeProjectPath(rawCwd.trim()) && !input.currentProjectCwd) {
-        toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Failed to add project",
-            description: "Relative paths require an active project.",
-          }),
-        );
-        return;
-      }
-
-      const cwd = resolveProjectPathForDispatch(rawCwd, input.currentProjectCwd);
-      if (cwd.length === 0) return;
+      const cwd = resolved.path;
 
       const existing = findProjectByPath(
         projects.filter((project) => project.environmentId === input.environmentId),

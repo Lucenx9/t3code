@@ -5586,12 +5586,12 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
-  it.effect("creates a missing workspace root during websocket project.create dispatch", () =>
+  it.effect("preserves workspace root whitespace during websocket project.create dispatch", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const parentDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-ws-project-create-" });
-      const missingWorkspaceRoot = path.join(parentDir, "nested", "new-project");
+      const missingWorkspaceRoot = path.join(parentDir, "nested", "new-project ");
 
       yield* buildAppUnderTest();
 

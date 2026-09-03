@@ -43,7 +43,8 @@ function trimTrailingPathSeparators(value: string): string {
 }
 
 export function normalizeProjectPathForDispatch(value: string): string {
-  return trimTrailingPathSeparators(value.trim());
+  const normalized = value.startsWith("/") || isWindowsAbsolutePath(value) ? value : value.trim();
+  return trimTrailingPathSeparators(normalized);
 }
 
 export function normalizeProjectPathForComparison(value: string): string {

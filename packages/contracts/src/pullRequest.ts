@@ -8,6 +8,7 @@ import {
   PositiveInt,
   ProjectId,
   TrimmedNonEmptyString,
+  WorkspaceRootPath,
 } from "./baseSchemas.ts";
 import { SourceControlProviderKind } from "./sourceControl.ts";
 
@@ -669,7 +670,7 @@ export const PullRequestDetail = Schema.Struct({
   viewerPermissions: PullRequestViewerPermissions,
   projectId: ProjectId,
   projectTitle: TrimmedNonEmptyString,
-  workspaceRoot: TrimmedNonEmptyString,
+  workspaceRoot: WorkspaceRootPath,
   repository: TrimmedNonEmptyString,
   number: PositiveInt,
   title: TrimmedNonEmptyString,

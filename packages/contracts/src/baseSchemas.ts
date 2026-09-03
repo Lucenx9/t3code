@@ -14,6 +14,9 @@ export const TrimmedString = Schema.String.pipe(
 );
 export const TrimmedNonEmptyString = TrimmedString.check(Schema.isNonEmpty());
 
+/** Reject blank workspace roots without changing valid path whitespace. */
+export const WorkspaceRootPath = Schema.String.check(Schema.isPattern(/\S/));
+
 export const NonNegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 export const PositiveInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(1));
 export const PortSchema = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 65535 }));

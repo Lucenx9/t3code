@@ -270,8 +270,8 @@ export function resolveAddProjectPath(input: {
   readonly currentProjectCwd?: string | null;
   readonly platform: string;
 }): { readonly ok: true; readonly path: string } | { readonly ok: false; readonly error: string } {
-  const rawPath = input.rawPath.trim();
-  if (rawPath.length === 0) {
+  const rawPath = input.rawPath;
+  if (rawPath.trim().length === 0) {
     return { ok: false, error: "Enter a project path." };
   }
   if (isUnsupportedWindowsProjectPath(rawPath, input.platform)) {

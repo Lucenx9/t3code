@@ -74,7 +74,7 @@ const makeSupervisor = Effect.fn("TestEnvironmentCommands.makeSupervisor")(funct
 });
 
 describe("environment commands", () => {
-  it.effect("adds generated command metadata", () =>
+  it.effect("adds generated command metadata without changing the workspace root", () =>
     Effect.gen(function* () {
       const dispatched: ClientOrchestrationCommand[] = [];
       const supervisor = yield* makeSupervisor(dispatched);
@@ -82,7 +82,7 @@ describe("environment commands", () => {
       const result = yield* createProject({
         projectId: ProjectId.make("project-1"),
         title: "Project",
-        workspaceRoot: "/workspace/project",
+        workspaceRoot: "/workspace/project ",
         createdAt: "2026-06-06T00:00:00.000Z",
       }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
 
@@ -93,7 +93,7 @@ describe("environment commands", () => {
           commandId: "00000000-0000-4000-8000-000000000000",
           projectId: "project-1",
           title: "Project",
-          workspaceRoot: "/workspace/project",
+          workspaceRoot: "/workspace/project ",
           createdAt: "2026-06-06T00:00:00.000Z",
         },
       ]);

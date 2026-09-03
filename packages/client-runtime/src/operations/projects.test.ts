@@ -175,6 +175,16 @@ describe("add project shared logic", () => {
     ).toEqual({ ok: true, path: "/work/next" });
   });
 
+  it("preserves trailing spaces in absolute project paths", () => {
+    expect(
+      resolveAddProjectPath({
+        rawPath: "/home/project ",
+        platform: "Linux",
+        currentProjectCwd: null,
+      }),
+    ).toEqual({ ok: true, path: "/home/project " });
+  });
+
   it("marks authenticated source control providers as ready", () => {
     const discovery: SourceControlDiscoveryResult = {
       versionControlSystems: [],

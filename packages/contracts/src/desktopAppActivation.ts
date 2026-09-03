@@ -1,6 +1,6 @@
 import * as Schema from "effect/Schema";
 
-import { ProjectId, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { ProjectId, ThreadId, TrimmedNonEmptyString, WorkspaceRootPath } from "./baseSchemas.ts";
 
 export const DESKTOP_APP_ACTIVATION_PROTOCOL_VERSION = 1 as const;
 
@@ -11,7 +11,7 @@ export const DesktopAppActivationRequest = Schema.Struct({
   version: Schema.Literal(DESKTOP_APP_ACTIVATION_PROTOCOL_VERSION),
   requestId: TrimmedNonEmptyString,
   type: Schema.Literal("open-workspace"),
-  workspaceRoot: TrimmedNonEmptyString,
+  workspaceRoot: WorkspaceRootPath,
   platform: DesktopAppActivationPlatform,
 });
 export type DesktopAppActivationRequest = typeof DesktopAppActivationRequest.Type;

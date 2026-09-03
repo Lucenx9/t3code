@@ -23,6 +23,13 @@ describe("projectPaths", () => {
     expect(normalizeProjectPathForComparison("/repo/app/")).toBe("/repo/app");
   });
 
+  it("preserves trailing spaces in project paths", () => {
+    expect(resolveProjectPathForDispatch("/home/project ")).toBe("/home/project ");
+    expect(
+      findProjectByPath([{ id: "project-1", cwd: "/home/project" }], "/home/project "),
+    ).toBeUndefined();
+  });
+
   it("normalizes windows-style paths for comparison", () => {
     expect(normalizeProjectPathForComparison("C:/Work/Repo/")).toBe("c:\\work\\repo");
     expect(normalizeProjectPathForComparison("C:\\Work\\Repo\\")).toBe("c:\\work\\repo");
