@@ -22,11 +22,22 @@ function splitMainPrerelease(version: string): [main: string, prerelease: string
   if (dash < 0) {
     return [core, undefined];
   }
+  if (dash === core.length - 1) {
+    // An empty prerelease ("1.2.3-...") is invalid: keep the version
+    // unparseable instead of normalizing into the core version.
+    return [version, undefined];
+  }
   return [core.slice(0, dash), core.slice(dash + 1)];
 }
 
 export function normalizeSemverVersion(version: string): string {
-  const [main, prerelease] = splitMainPrerelease(version.trim());
+  const trimmed = version.trim();
+  const [main, prerelease] = splitMainPrerelease(trimmed);
+  // A malformed build suffix stays unparseable: pass it through untouched so
+  // empty-segment filtering below cannot repair it into a valid suffix.
+  if (main.includes("+")) {
+    return trimmed;
+  }
   const segments: string[] = [];
   for (const segment of (main ?? "").split(".")) {
     const trimmed = segment.trim();

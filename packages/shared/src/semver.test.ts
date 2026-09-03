@@ -72,6 +72,19 @@ describe("semver helpers", () => {
     expect(normalizeSemverVersion("1.2.3+build.1")).toBe("1.2.3");
   });
 
+  it("keeps build metadata unparseable when normalization would repair it", () => {
+    // Regression (Codex + Bugbot reviews): normalize drops empty dot
+    // segments, which must not launder a malformed suffix into a valid one.
+    expect(parseSemver("1.2.3+foo.")).toBeNull();
+    expect(parseSemver("1.2.3+foo..bar")).toBeNull();
+  });
+
+  it("rejects empty prerelease identifiers", () => {
+    // Regression (CodeRabbit review): 1.2.3-+build normalized into 1.2.3.
+    expect(parseSemver("1.2.3-+build")).toBeNull();
+    expect(parseSemver("1.2.3-")).toBeNull();
+  });
+
   it("falls back to lexical comparison for malformed numeric segments", () => {
     expect(compareSemverVersions("1.2.3abc", "1.2.10")).toBeGreaterThan(0);
   });
