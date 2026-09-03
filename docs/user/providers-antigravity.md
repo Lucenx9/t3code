@@ -117,9 +117,9 @@ T3 Code asks you to select an available model instead of silently changing it.
 Use Antigravity's native `/plan` command to request a plan. T3 Code's separate Plan mode control
 is not available for this provider.
 
-Project skills belong in `.agents/skills`. T3 Code also discovers the legacy `.agent/skills`
-location for existing projects. When both locations define the same skill name, `.agents/skills`
-takes precedence.
+Project skills should use `.agents/skills`. T3 Code also discovers `.gemini/skills` and the legacy
+`.agent/skills` location. When multiple locations define the same skill name, `.gemini/skills`
+takes precedence, followed by `.agents/skills` and then `.agent/skills`.
 
 Antigravity reads and edits workspace files through T3 Code. Each write shows up as a file
 change approval with the content, so **Supervised** and **Auto-accept edits** behave the same way
