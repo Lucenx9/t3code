@@ -291,35 +291,39 @@ export const makeAntigravityAuth = Effect.fn("makeAntigravityAuth")(function* <
       Effect.flatMap((result) => finishFlow(flow, result)),
     );
 
-  const stopFlow = (flow: AuthFlow, phase: "cancelled" | "failed", message: string) =>
-    Effect.uninterruptible(
+  const stopFlow = Effect.fn("AntigravityAuth.stopFlow")(function* (
+    flow: AuthFlow,
+    phase: "cancelled" | "failed",
+    message: string,
+    options: { readonly interruptForwarding?: boolean } = {},
+  ) {
+    const detached = yield* lock.withPermits(1)(
       Effect.gen(function* () {
-        const detached = yield* lock.withPermits(1)(
-          Effect.gen(function* () {
-            if (activeFlow !== flow) return false;
-            activeFlow = undefined;
-            operation = "cancel";
-            flow.pending = undefined;
-            yield* publishFlow(flow, {
-              ...flow.state,
-              phase,
-              authorizationUrl: null,
-              expiresAt: null,
-              message,
-            });
-            return true;
-          }),
-        );
-        if (!detached) return;
-        if (flow.forwarding) yield* Fiber.interrupt(flow.forwarding);
-        if (flow.fiber) yield* Fiber.interrupt(flow.fiber);
-        yield* lock.withPermits(1)(
-          Effect.sync(() => {
-            if (operation === "cancel") operation = "idle";
-          }),
-        );
+        if (activeFlow !== flow) return false;
+        activeFlow = undefined;
+        operation = "cancel";
+        flow.pending = undefined;
+        yield* publishFlow(flow, {
+          ...flow.state,
+          phase,
+          authorizationUrl: null,
+          expiresAt: null,
+          message,
+        });
+        return true;
       }),
     );
+    if (!detached) return;
+    if ((options.interruptForwarding ?? true) && flow.forwarding) {
+      yield* Fiber.interrupt(flow.forwarding);
+    }
+    if (flow.fiber) yield* Fiber.interrupt(flow.fiber);
+    yield* lock.withPermits(1)(
+      Effect.sync(() => {
+        if (operation === "cancel") operation = "idle";
+      }),
+    );
+  }, Effect.uninterruptible);
 
   const requireFlow = (ownerSessionId: string, flowId: string, name: string) =>
     Effect.gen(function* () {
@@ -411,11 +415,10 @@ export const makeAntigravityAuth = Effect.fn("makeAntigravityAuth")(function* <
             options.forwardCallback?.(callback) ??
             forwardAntigravityCallback(options.instanceId, callback)
           ).pipe(
-            // stopFlow interrupts this fiber, so it runs from a sibling fiber.
             Effect.tapError(() =>
-              stopFlow(flow, "failed", FORWARDING_FAILED_MESSAGE).pipe(
-                Effect.forkIn(instanceScope),
-              ),
+              stopFlow(flow, "failed", FORWARDING_FAILED_MESSAGE, {
+                interruptForwarding: false,
+              }),
             ),
             Effect.interruptible,
             Effect.forkIn(instanceScope),

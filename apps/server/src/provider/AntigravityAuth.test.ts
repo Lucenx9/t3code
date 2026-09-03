@@ -57,6 +57,7 @@ const makeHarness = Effect.fn("makeAuthTestHarness")(function* (
     readonly authorizationUrls?: ReadonlyArray<string>;
     readonly supportsLogout?: boolean;
     readonly beforeInitialize?: Effect.Effect<void>;
+    readonly beforeProcessClose?: Effect.Effect<void>;
     readonly forwardCallback?: Effect.Effect<void, ProviderSetupError>;
   } = {},
 ) {
@@ -77,6 +78,7 @@ const makeHarness = Effect.fn("makeAuthTestHarness")(function* (
         events.push("process-open");
         yield* Effect.addFinalizer(() =>
           Effect.gen(function* () {
+            yield* options.beforeProcessClose ?? Effect.void;
             events.push("process-close");
             yield* Deferred.succeed(closed, undefined);
           }),
@@ -305,6 +307,42 @@ it.layer(NodeServices.layer)("AntigravityAuth", (it) => {
       const failed = yield* phase(harness.auth, "failed");
       assert.include(failed.message ?? "", "Could not deliver");
       assert.isTrue(harness.events.includes("process-close"));
+    }),
+  );
+
+  it.effect("finishes failed callback cleanup before allowing an immediate retry", () =>
+    Effect.gen(function* () {
+      const processCloseGate = yield* Deferred.make<void>();
+      const completionReturned = yield* Deferred.make<void>();
+      const harness = yield* makeHarness({
+        beforeProcessClose: Deferred.await(processCloseGate),
+        forwardCallback: Effect.fail(
+          new ProviderSetupError({
+            instanceId,
+            operation: "complete",
+            detail: "loopback refused",
+          }),
+        ),
+      });
+      const first = yield* harness.auth.controller.start(owner);
+      yield* phase(harness.auth, "waiting");
+
+      const completion = yield* harness.auth.controller
+        .complete(owner, { flowId: first.flowId!, callbackUrl })
+        .pipe(
+          Effect.exit,
+          Effect.tap(() => Deferred.succeed(completionReturned, undefined)),
+          Effect.forkScoped,
+        );
+      yield* phase(harness.auth, "failed");
+      const returnedBeforeCleanup = yield* Deferred.poll(completionReturned);
+      yield* Deferred.succeed(processCloseGate, undefined);
+      assert.isTrue(Option.isNone(returnedBeforeCleanup));
+      assert.isTrue(Exit.isFailure(yield* Fiber.join(completion)));
+      const retry = yield* harness.auth.controller.start(owner);
+      assert.notEqual(retry.flowId, first.flowId);
+      yield* phase(harness.auth, "waiting");
+      yield* harness.auth.controller.cancel(owner, retry.flowId!);
     }),
   );
 
