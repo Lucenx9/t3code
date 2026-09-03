@@ -46,6 +46,15 @@ describe("semver helpers", () => {
     expect(compareSemverVersions("2.1.111-beta.1", "2.1.111")).toBeLessThan(0);
   });
 
+  it("preserves hyphens inside prerelease identifiers", () => {
+    // Regression: split("-", 2) discarded everything after a second hyphen,
+    // so "1.2.3-alpha-1" normalized to "1.2.3-alpha".
+    expect(normalizeSemverVersion("1.2.3-alpha-1")).toBe("1.2.3-alpha-1");
+    expect(normalizeSemverVersion("1.0.0-beta.2-extra")).toBe("1.0.0-beta.2-extra");
+    expect(parseSemver("1.2.3-alpha-1")?.prerelease).toEqual(["alpha-1"]);
+    expect(compareSemverVersions("1.2.3-alpha", "1.2.3-alpha-1")).not.toBe(0);
+  });
+
   it("falls back to lexical comparison for malformed numeric segments", () => {
     expect(compareSemverVersions("1.2.3abc", "1.2.10")).toBeGreaterThan(0);
   });
