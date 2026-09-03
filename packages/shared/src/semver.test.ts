@@ -55,6 +55,14 @@ describe("semver helpers", () => {
     expect(compareSemverVersions("1.2.3-alpha", "1.2.3-alpha-1")).not.toBe(0);
   });
 
+  it("ignores build metadata in precedence", () => {
+    // Regression (Codex review on this PR): build metadata must not affect
+    // precedence, matching compareExactServiceVersions in serviceProtocol.ts.
+    expect(normalizeSemverVersion("1.2.3-alpha-1+build")).toBe("1.2.3-alpha-1");
+    expect(parseSemver("1.2.3-alpha-1+build")?.prerelease).toEqual(["alpha-1"]);
+    expect(compareSemverVersions("1.2.3-alpha-1+one", "1.2.3-alpha-1+two")).toBe(0);
+  });
+
   it("falls back to lexical comparison for malformed numeric segments", () => {
     expect(compareSemverVersions("1.2.3abc", "1.2.10")).toBeGreaterThan(0);
   });
