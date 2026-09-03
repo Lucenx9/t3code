@@ -58,7 +58,10 @@ import { useSavedRemoteConnections } from "../../state/use-remote-environment-re
 import { SettingsRow } from "./components/SettingsRow";
 import { SettingsSection } from "./components/SettingsSection";
 import { SettingsSwitchRow } from "./components/SettingsSwitchRow";
-import { resolveAgentAwarenessPlatformPresentation } from "./SettingsRouteScreen.logic";
+import {
+  resolveAgentAwarenessPlatformPresentation,
+  supportsSharedSettingsSync,
+} from "./SettingsRouteScreen.logic";
 
 type NotificationStatus = "checking" | "enabled" | "disabled" | "unsupported";
 type LiveActivityStatus = "checking" | "enabled" | "disabled" | "signed-out" | "linking";
@@ -564,11 +567,12 @@ function AutoSettleSettingsRows() {
     reportFailure: true,
   });
 
-  const connected = environments.filter(
-    (environment) =>
-      environment.connection.phase === "connected" &&
-      environment.serverConfig?.environment.capabilities.threadAutoSettlement === true,
-  );
+  const supportsSharedSettings = (environment: (typeof environments)[number]) =>
+    supportsSharedSettingsSync({
+      connectionPhase: environment.connection.phase,
+      capabilities: environment.serverConfig?.environment.capabilities ?? null,
+    });
+  const connected = environments.filter(supportsSharedSettings);
   const reference = connected[0] ?? null;
   const referenceSettings = reference?.serverConfig?.settings ?? null;
 
@@ -590,7 +594,7 @@ function AutoSettleSettingsRows() {
     environments: environments.map((environment) => ({
       environmentId: environment.environmentId,
       label: environment.label,
-      connected: environment.connection.phase === "connected",
+      connected: supportsSharedSettings(environment),
       settings: environment.serverConfig?.settings ?? null,
     })),
   });

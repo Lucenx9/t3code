@@ -1,6 +1,29 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { resolveAgentAwarenessPlatformPresentation } from "./SettingsRouteScreen.logic";
+import {
+  resolveAgentAwarenessPlatformPresentation,
+  supportsSharedSettingsSync,
+} from "./SettingsRouteScreen.logic";
+
+describe("supportsSharedSettingsSync", () => {
+  it("accepts only connected servers that advertise the shared-settings capability", () => {
+    expect(
+      supportsSharedSettingsSync({
+        connectionPhase: "connected",
+        capabilities: { threadAutoSettlement: true },
+      }),
+    ).toBe(true);
+    expect(supportsSharedSettingsSync({ connectionPhase: "connected", capabilities: {} })).toBe(
+      false,
+    );
+    expect(
+      supportsSharedSettingsSync({
+        connectionPhase: "reconnecting",
+        capabilities: { threadAutoSettlement: true },
+      }),
+    ).toBe(false);
+  });
+});
 
 describe("resolveAgentAwarenessPlatformPresentation", () => {
   it("explains that agent awareness settings are unavailable on Android", () => {
