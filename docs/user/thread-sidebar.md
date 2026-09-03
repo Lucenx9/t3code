@@ -26,9 +26,9 @@ Change these rules in **Settings > General**. The change is written to every con
 whose server supports shared settings. An environment that is offline or needs a server update
 keeps its old value and does not appear in mismatch warnings. When a connected environment whose
 server supports shared settings holds a different value, **Settings > General** shows a warning
-that names it. Choose **Apply to all** to write your current values to every environment that is
-connected and supports shared settings. The same applies to the new-thread workspace mode and the
-source control writing style.
+that names it. Choose **Apply to all** to write your current values to the environments named in
+the warning. The same applies to the new-thread workspace mode and the source control writing
+style.
 
 A settings change affects future settlement and does not reopen a settled thread. Settings saved
 by older clients on one device no longer control this behavior.
