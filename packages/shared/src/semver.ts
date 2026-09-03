@@ -120,7 +120,9 @@ function comparePrereleaseIdentifier(left: string, right: string): number {
   if (rightNumeric) {
     return 1;
   }
-  return left.localeCompare(right);
+  // Semver identifiers compare lexically in ASCII order, not locale
+  // collation: "Z" precedes "a". Matches compareExactServiceVersions.
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 export function compareSemverVersions(left: string, right: string): number {

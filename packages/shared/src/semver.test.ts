@@ -85,6 +85,13 @@ describe("semver helpers", () => {
     expect(parseSemver("1.2.3-")).toBeNull();
   });
 
+  it("compares prerelease identifiers in ASCII order", () => {
+    // Regression (Codex review on this PR): semver identifiers with letters
+    // or hyphens compare lexically in ASCII order, so Z precedes a.
+    expect(compareSemverVersions("1.2.3-alpha-Z", "1.2.3-alpha-a")).toBeLessThan(0);
+    expect(compareSemverVersions("1.2.3-alpha", "1.2.3-alpha")).toBe(0);
+  });
+
   it("falls back to lexical comparison for malformed numeric segments", () => {
     expect(compareSemverVersions("1.2.3abc", "1.2.10")).toBeGreaterThan(0);
   });
