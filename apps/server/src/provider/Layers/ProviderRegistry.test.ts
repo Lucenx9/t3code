@@ -1136,7 +1136,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
         }),
       );
 
-      it.effect("deduplicates cwd probes and clears snapshots when an instance rebuilds", () =>
+      it.effect("retries incomplete cwd probes and clears rebuilt snapshots", () =>
         Effect.gen(function* () {
           const driver = ProviderDriverKind.make("codex");
           const instanceId = ProviderInstanceId.make("codex");
@@ -1165,8 +1165,15 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             installed: false,
             slashCommands: [],
           } as const satisfies ServerProvider;
+          const emptyScopedProvider = {
+            ...machineProvider,
+            checkedAt: "2026-06-10T00:00:30.000Z",
+            workspaceSnapshots: [],
+          } as const satisfies ServerProvider;
           const snapshotCalls = yield* Ref.make(0);
-          const returnPendingSnapshot = yield* Ref.make(true);
+          const snapshotResult = yield* Ref.make<Effect.Effect<ServerProvider>>(
+            Effect.succeed(pendingScopedProvider),
+          );
           const probeStarted = yield* Deferred.make<void>();
           const releaseProbe = yield* Deferred.make<void>();
           const makeInstance = (
@@ -1196,13 +1203,10 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             textGeneration: {} as ProviderInstance["textGeneration"],
           });
           const firstInstance = makeInstance(machineProvider, () =>
-            Effect.gen(function* () {
-              yield* Ref.update(snapshotCalls, (count) => count + 1);
-              if (yield* Ref.get(returnPendingSnapshot)) return pendingScopedProvider;
-              yield* Deferred.succeed(probeStarted, undefined);
-              yield* Deferred.await(releaseProbe);
-              return scopedProvider;
-            }),
+            Ref.update(snapshotCalls, (count) => count + 1).pipe(
+              Effect.andThen(Ref.get(snapshotResult)),
+              Effect.flatten,
+            ),
           );
           const rebuiltProvider = {
             ...machineProvider,
@@ -1249,7 +1253,17 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             const registry = yield* ProviderRegistry.ProviderRegistry;
             yield* registry.refreshWorkspaceSnapshot({ instanceId, cwd: "/workspace" });
             assert.strictEqual((yield* registry.getProviders)[0]?.workspaceSnapshots, undefined);
-            yield* Ref.set(returnPendingSnapshot, false);
+            yield* Ref.set(snapshotResult, Effect.succeed(emptyScopedProvider));
+            yield* registry.refreshWorkspaceSnapshot({ instanceId, cwd: "/workspace" });
+            assert.strictEqual((yield* registry.getProviders)[0]?.workspaceSnapshots, undefined);
+            assert.strictEqual(yield* Ref.get(snapshotCalls), 2);
+            yield* Ref.set(
+              snapshotResult,
+              Deferred.succeed(probeStarted, undefined).pipe(
+                Effect.andThen(Deferred.await(releaseProbe)),
+                Effect.as(scopedProvider),
+              ),
+            );
             const workspaceUpdate = yield* registry.streamChanges.pipe(
               Stream.runHead,
               Effect.forkChild,
@@ -1263,7 +1277,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
               .refreshWorkspaceSnapshot({ instanceId, cwd: "/workspace" })
               .pipe(Effect.forkChild);
             yield* Effect.yieldNow;
-            assert.strictEqual(yield* Ref.get(snapshotCalls), 2);
+            assert.strictEqual(yield* Ref.get(snapshotCalls), 3);
             yield* Deferred.succeed(releaseProbe, undefined);
             yield* Fiber.join(firstRefresh);
             yield* Fiber.join(duplicateRefresh);
@@ -1276,7 +1290,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
               scopedProvider.skills,
             );
             yield* registry.refreshWorkspaceSnapshot({ instanceId, cwd: "/workspace" });
-            assert.strictEqual(yield* Ref.get(snapshotCalls), 2);
+            assert.strictEqual(yield* Ref.get(snapshotCalls), 3);
 
             yield* Ref.set(instancesRef, [rebuiltInstance]);
             yield* PubSub.publish(registryChanges, undefined);

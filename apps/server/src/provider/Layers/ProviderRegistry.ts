@@ -80,6 +80,11 @@ const hasModelCapabilities = (model: ServerProvider["models"][number]): boolean 
 
 const MAX_WORKSPACE_SNAPSHOTS_PER_PROVIDER = 16;
 
+const shouldCacheWorkspaceSnapshot = (snapshot: ServerProvider, cwd: string): boolean =>
+  snapshot.status !== "error" &&
+  (snapshot.workspaceSnapshots === undefined ||
+    snapshot.workspaceSnapshots.some((entry) => entry.cwd === cwd));
+
 export function upsertProviderWorkspaceSnapshot(
   provider: ServerProvider,
   cwd: string,
@@ -781,7 +786,7 @@ export const ProviderRegistryLive = Layer.effect(
       if (!claimed) return yield* Ref.get(providersRef);
       return yield* instance.snapshotForCwd(input.cwd).pipe(
         Effect.flatMap((scopedSnapshot) =>
-          scopedSnapshot.status === "error"
+          !shouldCacheWorkspaceSnapshot(scopedSnapshot, input.cwd)
             ? Ref.get(providersRef)
             : instanceRegistry.getInstance(input.instanceId).pipe(
                 Effect.flatMap((currentInstance) => {
