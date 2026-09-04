@@ -7,6 +7,7 @@ import {
   getProviderSlashCommandsForSlashMenu,
   getProviderSkillsForSlashMenu,
   hasCompleteProviderWorkspaceSnapshot,
+  hasPendingProviderWorkspaceSkillDiscovery,
   resolveProviderSkillsForCwd,
   resolveProviderSlashCommandsForCwd,
   resolveProviderSkillSourceKind,
@@ -253,6 +254,16 @@ describe("workspace provider snapshots", () => {
       false,
     );
     expect(hasCompleteProviderWorkspaceSnapshot(provider, "/workspace/project-b")).toBe(false);
+    expect(hasPendingProviderWorkspaceSkillDiscovery(pendingProvider, "/workspace/project-a")).toBe(
+      true,
+    );
+    expect(hasPendingProviderWorkspaceSkillDiscovery(provider, "/workspace/project-b")).toBe(false);
+    expect(
+      hasPendingProviderWorkspaceSkillDiscovery(
+        { ...pendingProvider, status: "error" },
+        "/workspace/project-a",
+      ),
+    ).toBe(false);
   });
 
   it("uses the cwd snapshot after a provider session has populated it", () => {

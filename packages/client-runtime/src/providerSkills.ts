@@ -119,6 +119,16 @@ export function hasCompleteProviderWorkspaceSnapshot(
   return snapshot !== undefined && snapshot.skillsDiscoveryPending !== true;
 }
 
+export function hasPendingProviderWorkspaceSkillDiscovery(
+  provider: ServerProvider,
+  cwd: string | null | undefined,
+): boolean {
+  return (
+    provider.status !== "error" &&
+    resolveProviderWorkspaceSnapshot(provider, cwd)?.skillsDiscoveryPending === true
+  );
+}
+
 export function resolveProviderSkillsForCwd(
   provider: ServerProvider,
   cwd: string | null | undefined,

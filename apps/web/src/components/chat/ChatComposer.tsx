@@ -798,6 +798,7 @@ import {
   getProviderSlashCommandsForSlashMenu,
   getProviderSkillsForSlashMenu,
   hasCompleteProviderWorkspaceSnapshot,
+  hasPendingProviderWorkspaceSkillDiscovery,
   resolveProviderSkillsForCwd,
   resolveProviderSlashCommandsForCwd,
 } from "@t3tools/client-runtime/providerSkills";
@@ -1628,8 +1629,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     gitCwd && selectedProviderEntry
       ? `${environmentId}:${selectedProviderEntry.instanceId}:${gitCwd}`
       : null;
-  const workspaceRefreshKeyRef = useRef<string | null>(null);
-  const workspaceRefreshRetryTimerRef = useRef<number | null>(null);
+  const workspaceRefreshAttemptKeyRef = useRef<string | null>(null);
+  const workspaceRefreshRetryTimerRef = useRef<{
+    readonly key: string;
+    readonly timeout: number;
+  } | null>(null);
   const [workspaceRefreshRetryVersion, setWorkspaceRefreshRetryVersion] = useState(0);
   const hasCompleteWorkspaceSnapshot = Boolean(
     selectedProviderStatus && hasCompleteProviderWorkspaceSnapshot(selectedProviderStatus, gitCwd),
@@ -1637,58 +1641,69 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const hasCompleteWorkspaceSnapshotRef = useRef(hasCompleteWorkspaceSnapshot);
   useEffect(() => {
     hasCompleteWorkspaceSnapshotRef.current = hasCompleteWorkspaceSnapshot;
+    workspaceRefreshAttemptKeyRef.current = null;
+    if (hasCompleteWorkspaceSnapshot && workspaceRefreshRetryTimerRef.current !== null) {
+      window.clearTimeout(workspaceRefreshRetryTimerRef.current.timeout);
+      workspaceRefreshRetryTimerRef.current = null;
+    }
   }, [hasCompleteWorkspaceSnapshot]);
   useEffect(() => {
-    workspaceRefreshKeyRef.current = null;
+    const key = workspaceRefreshKey;
     return () => {
-      if (workspaceRefreshRetryTimerRef.current !== null) {
-        window.clearTimeout(workspaceRefreshRetryTimerRef.current);
+      if (workspaceRefreshRetryTimerRef.current?.key === key) {
+        window.clearTimeout(workspaceRefreshRetryTimerRef.current.timeout);
         workspaceRefreshRetryTimerRef.current = null;
       }
     };
-  }, [hasCompleteWorkspaceSnapshot, workspaceRefreshKey]);
+  }, [workspaceRefreshKey]);
   useEffect(() => {
     if (!gitCwd || !selectedProviderEntry || workspaceRefreshKey === null) return;
     const key = workspaceRefreshKey;
-    if (hasCompleteWorkspaceSnapshot) {
-      workspaceRefreshKeyRef.current = key;
-      return;
-    }
-    if (workspaceRefreshKeyRef.current === key) return;
-    workspaceRefreshKeyRef.current = key;
+    if (hasCompleteWorkspaceSnapshot) return;
+    const attemptKey = `${key}:${workspaceRefreshRetryVersion}`;
+    if (workspaceRefreshAttemptKeyRef.current === attemptKey) return;
+    workspaceRefreshAttemptKeyRef.current = attemptKey;
     const retryLater = () => {
-      if (workspaceRefreshKeyRef.current !== key || hasCompleteWorkspaceSnapshotRef.current) {
+      if (
+        workspaceRefreshAttemptKeyRef.current !== attemptKey ||
+        hasCompleteWorkspaceSnapshotRef.current
+      ) {
         return;
       }
-      workspaceRefreshRetryTimerRef.current = window.setTimeout(() => {
+      const timeout = window.setTimeout(() => {
         workspaceRefreshRetryTimerRef.current = null;
-        if (workspaceRefreshKeyRef.current !== key || hasCompleteWorkspaceSnapshotRef.current) {
+        if (
+          workspaceRefreshAttemptKeyRef.current !== attemptKey ||
+          hasCompleteWorkspaceSnapshotRef.current
+        ) {
           return;
         }
-        workspaceRefreshKeyRef.current = null;
         setWorkspaceRefreshRetryVersion((version) => version + 1);
       }, WORKSPACE_SNAPSHOT_RETRY_COOLDOWN_MS);
+      workspaceRefreshRetryTimerRef.current = { key, timeout };
     };
     void refreshProviders({
       environmentId,
       input: { instanceId: selectedProviderEntry.instanceId, cwd: gitCwd },
-    }).then((result) => {
-      const refreshCompleted =
-        result._tag === "Success" &&
-        result.value.providers.some(
-          (provider) =>
-            provider.instanceId === selectedProviderEntry.instanceId &&
-            hasCompleteProviderWorkspaceSnapshot(provider, gitCwd),
-        );
-      if (!refreshCompleted && workspaceRefreshKeyRef.current === key) {
-        retryLater();
-      }
-    }, retryLater);
+    }).then(
+      (result) => {
+        const discoveryPending =
+          result._tag === "Success" &&
+          result.value.providers.some(
+            (provider) =>
+              provider.instanceId === selectedProviderEntry.instanceId &&
+              hasPendingProviderWorkspaceSkillDiscovery(provider, gitCwd),
+          );
+        if (discoveryPending && workspaceRefreshAttemptKeyRef.current === attemptKey) {
+          retryLater();
+        }
+      },
+      () => undefined,
+    );
   }, [
     environmentId,
     gitCwd,
     hasCompleteWorkspaceSnapshot,
-    prompt,
     refreshProviders,
     selectedProviderEntry,
     workspaceRefreshKey,

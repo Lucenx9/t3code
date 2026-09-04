@@ -14,6 +14,7 @@ import {
   dedupeProviderSkillsByName,
   getProviderSkillsForSlashMenu,
   hasCompleteProviderWorkspaceSnapshot,
+  hasPendingProviderWorkspaceSkillDiscovery,
   isProviderSkillUserInvocable,
   resolveProviderSkillsForCwd,
 } from "@t3tools/client-runtime/providerSkills";
@@ -198,22 +199,30 @@ export function useComposerCommandMenu({
     selectedProviderStatus &&
     hasCompleteProviderWorkspaceSnapshot(selectedProviderStatus, projectCwd),
   );
-  const workspaceRefreshKeyRef = useRef<string | null>(null);
-  const workspaceRefreshRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const workspaceRefreshAttemptKeyRef = useRef<string | null>(null);
+  const workspaceRefreshRetryTimerRef = useRef<{
+    readonly key: string;
+    readonly timeout: ReturnType<typeof setTimeout>;
+  } | null>(null);
   const [workspaceRefreshRetryVersion, setWorkspaceRefreshRetryVersion] = useState(0);
   const hasCompleteWorkspaceSnapshotRef = useRef(hasCompleteWorkspaceSnapshot);
   useEffect(() => {
     hasCompleteWorkspaceSnapshotRef.current = hasCompleteWorkspaceSnapshot;
+    workspaceRefreshAttemptKeyRef.current = null;
+    if (hasCompleteWorkspaceSnapshot && workspaceRefreshRetryTimerRef.current !== null) {
+      clearTimeout(workspaceRefreshRetryTimerRef.current.timeout);
+      workspaceRefreshRetryTimerRef.current = null;
+    }
   }, [hasCompleteWorkspaceSnapshot]);
   useEffect(() => {
-    workspaceRefreshKeyRef.current = null;
+    const key = workspaceRefreshKey;
     return () => {
-      if (workspaceRefreshRetryTimerRef.current !== null) {
-        clearTimeout(workspaceRefreshRetryTimerRef.current);
+      if (workspaceRefreshRetryTimerRef.current?.key === key) {
+        clearTimeout(workspaceRefreshRetryTimerRef.current.timeout);
         workspaceRefreshRetryTimerRef.current = null;
       }
     };
-  }, [hasCompleteWorkspaceSnapshot, workspaceRefreshKey]);
+  }, [workspaceRefreshKey]);
   useEffect(() => {
     if (
       !environmentId ||
@@ -224,42 +233,48 @@ export function useComposerCommandMenu({
       return;
     }
     const key = workspaceRefreshKey;
-    if (hasCompleteWorkspaceSnapshot) {
-      workspaceRefreshKeyRef.current = key;
-      return;
-    }
-    if (workspaceRefreshKeyRef.current === key) return;
-    workspaceRefreshKeyRef.current = key;
+    if (hasCompleteWorkspaceSnapshot) return;
+    const attemptKey = `${key}:${workspaceRefreshRetryVersion}`;
+    if (workspaceRefreshAttemptKeyRef.current === attemptKey) return;
+    workspaceRefreshAttemptKeyRef.current = attemptKey;
     const retryLater = () => {
-      if (workspaceRefreshKeyRef.current !== key || hasCompleteWorkspaceSnapshotRef.current) {
+      if (
+        workspaceRefreshAttemptKeyRef.current !== attemptKey ||
+        hasCompleteWorkspaceSnapshotRef.current
+      ) {
         return;
       }
-      workspaceRefreshRetryTimerRef.current = setTimeout(() => {
+      const timeout = setTimeout(() => {
         workspaceRefreshRetryTimerRef.current = null;
-        if (workspaceRefreshKeyRef.current !== key || hasCompleteWorkspaceSnapshotRef.current) {
+        if (
+          workspaceRefreshAttemptKeyRef.current !== attemptKey ||
+          hasCompleteWorkspaceSnapshotRef.current
+        ) {
           return;
         }
-        workspaceRefreshKeyRef.current = null;
         setWorkspaceRefreshRetryVersion((version) => version + 1);
       }, WORKSPACE_SNAPSHOT_RETRY_COOLDOWN_MS);
+      workspaceRefreshRetryTimerRef.current = { key, timeout };
     };
     void refreshProviders({
       environmentId,
       input: { instanceId: selectedProviderInstanceId, cwd: projectCwd },
-    }).then((result) => {
-      const refreshCompleted =
-        result._tag === "Success" &&
-        result.value.providers.some(
-          (provider) =>
-            provider.instanceId === selectedProviderInstanceId &&
-            hasCompleteProviderWorkspaceSnapshot(provider, projectCwd),
-        );
-      if (!refreshCompleted && workspaceRefreshKeyRef.current === key) {
-        retryLater();
-      }
-    }, retryLater);
+    }).then(
+      (result) => {
+        const discoveryPending =
+          result._tag === "Success" &&
+          result.value.providers.some(
+            (provider) =>
+              provider.instanceId === selectedProviderInstanceId &&
+              hasPendingProviderWorkspaceSkillDiscovery(provider, projectCwd),
+          );
+        if (discoveryPending && workspaceRefreshAttemptKeyRef.current === attemptKey) {
+          retryLater();
+        }
+      },
+      () => undefined,
+    );
   }, [
-    draftMessage,
     environmentId,
     hasCompleteWorkspaceSnapshot,
     projectCwd,
