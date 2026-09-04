@@ -426,6 +426,14 @@ it.layer(testLayer)("Antigravity provider snapshots", (it) => {
       Effect.gen(function* () {
         const harness = yield* makeHarness();
         yield* harness.initialize;
+        yield* harness.provider.snapshotForCwd("/workspace", [
+          {
+            name: "deploy",
+            description: "Ship it",
+            path: "/workspace/.agent/skills/deploy",
+            enabled: true,
+          },
+        ]);
         yield* harness.provider.onSessionStarted(started, "/workspace");
         yield* harness.provider.onAvailableCommands(commands, "/workspace");
         yield* Ref.set(
@@ -521,6 +529,14 @@ it.layer(testLayer)("Antigravity provider snapshots", (it) => {
           },
         ];
         for (const { error, installed } of failures) {
+          yield* harness.provider.snapshotForCwd("/workspace", [
+            {
+              name: "deploy",
+              description: "Ship it",
+              path: "/workspace/.agent/skills/deploy",
+              enabled: true,
+            },
+          ]);
           yield* harness.provider.onSessionStarted(started, "/workspace");
           yield* harness.provider.onAvailableCommands(commands, "/workspace");
           yield* Ref.set(harness.probe, Effect.fail(error));
@@ -624,6 +640,10 @@ it.layer(testLayer)("Antigravity provider snapshots", (it) => {
           ];
           yield* harness.provider.onSessionStarted(started, "/workspace");
           yield* harness.provider.onAvailableCommands(commands, "/workspace");
+          const beforeDiscovery = yield* harness.provider.snapshot.getSnapshot;
+          expect(
+            beforeDiscovery.workspaceSnapshots?.find((entry) => entry.cwd === "/workspace"),
+          ).toBeUndefined();
           const discovered = yield* harness.provider.snapshotForCwd("/workspace", skills);
           expect(discovered.skills).toEqual(skills);
           const snapshot = yield* harness.provider.snapshot.getSnapshot;
@@ -638,6 +658,41 @@ it.layer(testLayer)("Antigravity provider snapshots", (it) => {
           ).toEqual(skills);
         }),
       ),
+  );
+
+  it.effect("does not retain empty skill discoveries as workspace snapshots", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness();
+        yield* harness.initialize;
+        const emptySnapshot = yield* harness.provider.snapshotForCwd("/empty", []);
+        expect(emptySnapshot.skills).toEqual([]);
+        expect(
+          emptySnapshot.workspaceSnapshots?.find((entry) => entry.cwd === "/empty"),
+        ).toBeUndefined();
+        yield* harness.provider.onAvailableCommands(commands, "/empty");
+        const afterCommands = yield* harness.provider.snapshot.getSnapshot;
+        expect(
+          afterCommands.workspaceSnapshots?.find((entry) => entry.cwd === "/empty"),
+        ).toBeUndefined();
+
+        const skills = [
+          {
+            name: "deploy",
+            description: "Ship it",
+            path: "/workspace/.agent/skills/deploy",
+            enabled: true,
+          },
+        ];
+        yield* harness.provider.snapshotForCwd("/workspace", skills);
+        yield* harness.provider.onAvailableCommands(commands, "/workspace");
+        yield* harness.provider.snapshotForCwd("/workspace", []);
+        const existing = yield* harness.provider.snapshot.getSnapshot;
+        expect(
+          existing.workspaceSnapshots?.find((entry) => entry.cwd === "/workspace"),
+        ).toMatchObject({ slashCommands: commands, skills: [] });
+      }),
+    ),
   );
 
   it.effect("does not register empty workspace snapshots on session start before discovery", () =>
@@ -660,8 +715,16 @@ it.layer(testLayer)("Antigravity provider snapshots", (it) => {
         const harness = yield* makeHarness();
         yield* harness.initialize;
         yield* harness.provider.onSessionStarted(started);
+        yield* harness.provider.onAvailableCommands(commands);
         for (let index = 0; index < 35; index++) {
-          yield* harness.provider.onAvailableCommands(commands, `/workspace-${index}`);
+          yield* harness.provider.snapshotForCwd(`/workspace-${index}`, [
+            {
+              name: "deploy",
+              description: "Ship it",
+              path: `/workspace-${index}/.agent/skills/deploy`,
+              enabled: true,
+            },
+          ]);
         }
         const snapshot = yield* harness.provider.snapshotForCwd("/workspace-34");
         expect(snapshot.workspaceSnapshots).toHaveLength(32);

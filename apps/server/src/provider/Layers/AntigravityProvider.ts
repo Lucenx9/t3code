@@ -325,12 +325,14 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
       const existing = cwd
         ? state.draft.workspaceSnapshots?.find((entry) => entry.cwd === cwd)
         : undefined;
+      const shouldIncludeWorkspace =
+        cwd !== undefined && (existing !== undefined || discoveredSkills.has(cwd));
       return {
         ...state,
         draft: {
           ...state.draft,
           slashCommands,
-          ...(cwd
+          ...(shouldIncludeWorkspace
             ? {
                 workspaceSnapshots: [
                   ...(state.draft.workspaceSnapshots ?? []).filter((entry) => entry.cwd !== cwd),
@@ -376,12 +378,17 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
     cwd: string,
     skills?: ServerProvider["skills"],
   ) {
-    if (skills) {
-      discoveredSkills.set(cwd, skills);
+    if (skills !== undefined) {
+      if (skills.length > 0) {
+        discoveredSkills.set(cwd, skills);
+      } else {
+        discoveredSkills.delete(cwd);
+      }
       const updatedAt = DateTime.formatIso(yield* DateTime.now);
       yield* SubscriptionRef.update(metadata, (state) => {
         const existing = state.draft.workspaceSnapshots ?? [];
         const match = existing.find((entry) => entry.cwd === cwd);
+        if (match === undefined && skills.length === 0) return state;
         return {
           ...state,
           draft: {
