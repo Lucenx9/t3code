@@ -1634,14 +1634,20 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     readonly key: string;
     readonly timeout: number;
   } | null>(null);
+  const workspaceRefreshMissingRetryKeyRef = useRef<string | null>(null);
   const [workspaceRefreshRetryVersion, setWorkspaceRefreshRetryVersion] = useState(0);
   const hasCompleteWorkspaceSnapshot = Boolean(
     selectedProviderStatus && hasCompleteProviderWorkspaceSnapshot(selectedProviderStatus, gitCwd),
+  );
+  const hasPendingWorkspaceSkillDiscovery = Boolean(
+    selectedProviderStatus &&
+    hasPendingProviderWorkspaceSkillDiscovery(selectedProviderStatus, gitCwd),
   );
   const hasCompleteWorkspaceSnapshotRef = useRef(hasCompleteWorkspaceSnapshot);
   useEffect(() => {
     hasCompleteWorkspaceSnapshotRef.current = hasCompleteWorkspaceSnapshot;
     workspaceRefreshAttemptKeyRef.current = null;
+    workspaceRefreshMissingRetryKeyRef.current = null;
     if (hasCompleteWorkspaceSnapshot && workspaceRefreshRetryTimerRef.current !== null) {
       window.clearTimeout(workspaceRefreshRetryTimerRef.current.timeout);
       workspaceRefreshRetryTimerRef.current = null;
@@ -1649,6 +1655,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   }, [hasCompleteWorkspaceSnapshot]);
   useEffect(() => {
     const key = workspaceRefreshKey;
+    if (workspaceRefreshMissingRetryKeyRef.current !== key) {
+      workspaceRefreshMissingRetryKeyRef.current = null;
+    }
     return () => {
       if (workspaceRefreshRetryTimerRef.current?.key === key) {
         window.clearTimeout(workspaceRefreshRetryTimerRef.current.timeout);
@@ -1661,12 +1670,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     const key = workspaceRefreshKey;
     if (hasCompleteWorkspaceSnapshot) return;
     const attemptKey = `${key}:${workspaceRefreshRetryVersion}`;
-    if (workspaceRefreshAttemptKeyRef.current === attemptKey) return;
-    workspaceRefreshAttemptKeyRef.current = attemptKey;
     const retryLater = () => {
       if (
         workspaceRefreshAttemptKeyRef.current !== attemptKey ||
-        hasCompleteWorkspaceSnapshotRef.current
+        hasCompleteWorkspaceSnapshotRef.current ||
+        workspaceRefreshRetryTimerRef.current !== null
       ) {
         return;
       }
@@ -1682,29 +1690,59 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       }, WORKSPACE_SNAPSHOT_RETRY_COOLDOWN_MS);
       workspaceRefreshRetryTimerRef.current = { key, timeout };
     };
+    const retryMissingSnapshotOnce = (canRetry: boolean) => {
+      if (
+        !canRetry ||
+        workspaceRefreshAttemptKeyRef.current !== attemptKey ||
+        workspaceRefreshMissingRetryKeyRef.current === key
+      ) {
+        return;
+      }
+      workspaceRefreshMissingRetryKeyRef.current = key;
+      retryLater();
+    };
+    const retryAfterFailedRefresh = () => {
+      if (hasPendingWorkspaceSkillDiscovery) {
+        retryLater();
+        return;
+      }
+      retryMissingSnapshotOnce(selectedProviderStatus?.status !== "error");
+    };
+    if (workspaceRefreshAttemptKeyRef.current === attemptKey) {
+      if (hasPendingWorkspaceSkillDiscovery) retryLater();
+      return;
+    }
+    workspaceRefreshAttemptKeyRef.current = attemptKey;
     void refreshProviders({
       environmentId,
       input: { instanceId: selectedProviderEntry.instanceId, cwd: gitCwd },
-    }).then(
-      (result) => {
-        const discoveryPending =
-          result._tag === "Success" &&
-          result.value.providers.some(
-            (provider) =>
-              provider.instanceId === selectedProviderEntry.instanceId &&
-              hasPendingProviderWorkspaceSkillDiscovery(provider, gitCwd),
-          );
-        if (discoveryPending && workspaceRefreshAttemptKeyRef.current === attemptKey) {
-          retryLater();
-        }
-      },
-      () => undefined,
-    );
+    }).then((result) => {
+      if (result._tag !== "Success") {
+        retryAfterFailedRefresh();
+        return;
+      }
+      const refreshedProvider = result.value.providers.find(
+        (provider) => provider.instanceId === selectedProviderEntry.instanceId,
+      );
+      if (
+        refreshedProvider &&
+        hasPendingProviderWorkspaceSkillDiscovery(refreshedProvider, gitCwd)
+      ) {
+        retryLater();
+        return;
+      }
+      retryMissingSnapshotOnce(
+        refreshedProvider?.status !== "error" &&
+          (!refreshedProvider || !hasCompleteProviderWorkspaceSnapshot(refreshedProvider, gitCwd)),
+      );
+    }, retryAfterFailedRefresh);
   }, [
     environmentId,
     gitCwd,
     hasCompleteWorkspaceSnapshot,
+    hasPendingWorkspaceSkillDiscovery,
     refreshProviders,
+    selectedProviderStatus,
     selectedProviderEntry,
     workspaceRefreshKey,
     workspaceRefreshRetryVersion,

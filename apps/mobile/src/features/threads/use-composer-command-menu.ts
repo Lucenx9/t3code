@@ -204,11 +204,17 @@ export function useComposerCommandMenu({
     readonly key: string;
     readonly timeout: ReturnType<typeof setTimeout>;
   } | null>(null);
+  const workspaceRefreshMissingRetryKeyRef = useRef<string | null>(null);
   const [workspaceRefreshRetryVersion, setWorkspaceRefreshRetryVersion] = useState(0);
+  const hasPendingWorkspaceSkillDiscovery = Boolean(
+    selectedProviderStatus &&
+    hasPendingProviderWorkspaceSkillDiscovery(selectedProviderStatus, projectCwd),
+  );
   const hasCompleteWorkspaceSnapshotRef = useRef(hasCompleteWorkspaceSnapshot);
   useEffect(() => {
     hasCompleteWorkspaceSnapshotRef.current = hasCompleteWorkspaceSnapshot;
     workspaceRefreshAttemptKeyRef.current = null;
+    workspaceRefreshMissingRetryKeyRef.current = null;
     if (hasCompleteWorkspaceSnapshot && workspaceRefreshRetryTimerRef.current !== null) {
       clearTimeout(workspaceRefreshRetryTimerRef.current.timeout);
       workspaceRefreshRetryTimerRef.current = null;
@@ -216,6 +222,9 @@ export function useComposerCommandMenu({
   }, [hasCompleteWorkspaceSnapshot]);
   useEffect(() => {
     const key = workspaceRefreshKey;
+    if (workspaceRefreshMissingRetryKeyRef.current !== key) {
+      workspaceRefreshMissingRetryKeyRef.current = null;
+    }
     return () => {
       if (workspaceRefreshRetryTimerRef.current?.key === key) {
         clearTimeout(workspaceRefreshRetryTimerRef.current.timeout);
@@ -235,12 +244,11 @@ export function useComposerCommandMenu({
     const key = workspaceRefreshKey;
     if (hasCompleteWorkspaceSnapshot) return;
     const attemptKey = `${key}:${workspaceRefreshRetryVersion}`;
-    if (workspaceRefreshAttemptKeyRef.current === attemptKey) return;
-    workspaceRefreshAttemptKeyRef.current = attemptKey;
     const retryLater = () => {
       if (
         workspaceRefreshAttemptKeyRef.current !== attemptKey ||
-        hasCompleteWorkspaceSnapshotRef.current
+        hasCompleteWorkspaceSnapshotRef.current ||
+        workspaceRefreshRetryTimerRef.current !== null
       ) {
         return;
       }
@@ -256,30 +264,61 @@ export function useComposerCommandMenu({
       }, WORKSPACE_SNAPSHOT_RETRY_COOLDOWN_MS);
       workspaceRefreshRetryTimerRef.current = { key, timeout };
     };
+    const retryMissingSnapshotOnce = (canRetry: boolean) => {
+      if (
+        !canRetry ||
+        workspaceRefreshAttemptKeyRef.current !== attemptKey ||
+        workspaceRefreshMissingRetryKeyRef.current === key
+      ) {
+        return;
+      }
+      workspaceRefreshMissingRetryKeyRef.current = key;
+      retryLater();
+    };
+    const retryAfterFailedRefresh = () => {
+      if (hasPendingWorkspaceSkillDiscovery) {
+        retryLater();
+        return;
+      }
+      retryMissingSnapshotOnce(selectedProviderStatus?.status !== "error");
+    };
+    if (workspaceRefreshAttemptKeyRef.current === attemptKey) {
+      if (hasPendingWorkspaceSkillDiscovery) retryLater();
+      return;
+    }
+    workspaceRefreshAttemptKeyRef.current = attemptKey;
     void refreshProviders({
       environmentId,
       input: { instanceId: selectedProviderInstanceId, cwd: projectCwd },
-    }).then(
-      (result) => {
-        const discoveryPending =
-          result._tag === "Success" &&
-          result.value.providers.some(
-            (provider) =>
-              provider.instanceId === selectedProviderInstanceId &&
-              hasPendingProviderWorkspaceSkillDiscovery(provider, projectCwd),
-          );
-        if (discoveryPending && workspaceRefreshAttemptKeyRef.current === attemptKey) {
-          retryLater();
-        }
-      },
-      () => undefined,
-    );
+    }).then((result) => {
+      if (result._tag !== "Success") {
+        retryAfterFailedRefresh();
+        return;
+      }
+      const refreshedProvider = result.value.providers.find(
+        (provider) => provider.instanceId === selectedProviderInstanceId,
+      );
+      if (
+        refreshedProvider &&
+        hasPendingProviderWorkspaceSkillDiscovery(refreshedProvider, projectCwd)
+      ) {
+        retryLater();
+        return;
+      }
+      retryMissingSnapshotOnce(
+        refreshedProvider?.status !== "error" &&
+          (!refreshedProvider ||
+            !hasCompleteProviderWorkspaceSnapshot(refreshedProvider, projectCwd)),
+      );
+    }, retryAfterFailedRefresh);
   }, [
     environmentId,
     hasCompleteWorkspaceSnapshot,
+    hasPendingWorkspaceSkillDiscovery,
     projectCwd,
     refreshProviders,
     selectedProviderInstanceId,
+    selectedProviderStatus,
     workspaceRefreshKey,
     workspaceRefreshRetryVersion,
   ]);
