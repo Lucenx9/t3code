@@ -313,9 +313,12 @@ it.layer(NodeServices.layer)("AntigravityAuth", (it) => {
   it.effect("finishes failed callback cleanup before allowing an immediate retry", () =>
     Effect.gen(function* () {
       const processCloseGate = yield* Deferred.make<void>();
+      const processCloseStarted = yield* Deferred.make<void>();
       const completionReturned = yield* Deferred.make<void>();
       const harness = yield* makeHarness({
-        beforeProcessClose: Deferred.await(processCloseGate),
+        beforeProcessClose: Deferred.succeed(processCloseStarted, undefined).pipe(
+          Effect.andThen(Deferred.await(processCloseGate)),
+        ),
         forwardCallback: Effect.fail(
           new ProviderSetupError({
             instanceId,
@@ -335,6 +338,7 @@ it.layer(NodeServices.layer)("AntigravityAuth", (it) => {
           Effect.forkScoped,
         );
       yield* phase(harness.auth, "failed");
+      yield* Deferred.await(processCloseStarted);
       const returnedBeforeCleanup = yield* Deferred.poll(completionReturned);
       yield* Deferred.succeed(processCloseGate, undefined);
       assert.isTrue(Option.isNone(returnedBeforeCleanup));
