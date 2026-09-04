@@ -53,7 +53,9 @@ export function useThreadFindTarget({
     if (navigationRef.current === null) {
       const target: ThreadFindTarget = {
         ...request,
-        activationRef: { current: { scrolled: false, cancelled: false } },
+        activationRef: {
+          current: { scrolled: false, scrolledToExactRange: false, cancelled: false },
+        },
         onPositioned: () => {
           if (navigationRef.current?.target !== target) return;
           navigationRef.current.positioned = true;

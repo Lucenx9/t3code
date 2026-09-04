@@ -14,6 +14,7 @@ export interface ThreadFindRequest {
 export interface ThreadFindTarget extends ThreadFindRequest {
   readonly activationRef: RefObject<{
     scrolled: boolean;
+    scrolledToExactRange: boolean;
     cancelled: boolean;
     cancelScroll?: () => void;
   }>;
@@ -86,11 +87,21 @@ export function observeThreadFindSource({
     }
     const ranges = resolveThreadFindRanges(root, request.query, request.match.occurrenceIndex);
     const range = ranges?.[0] ?? null;
+    const exactRangeReady =
+      range !== null && root.querySelector("[data-thread-find-pending]") === null;
     const rect = (range ?? root).getBoundingClientRect();
     if (rect.height <= 0 || scrollNode.clientHeight <= 0) return;
 
-    if (!activation.scrolled) {
+    const needsPositioning =
+      !activation.scrolled || (range !== null && !activation.scrolledToExactRange);
+    if (needsPositioning) {
       if (scrolling) return;
+      const finishPositioning = () => {
+        const notify = !activation.scrolled;
+        activation.scrolled = true;
+        if (exactRangeReady) activation.scrolledToExactRange = true;
+        if (notify) request.onPositioned();
+      };
       const viewportRect = scrollNode.getBoundingClientRect();
       const offset = Math.max(
         0,
@@ -109,15 +120,13 @@ export function observeThreadFindSource({
           () => {
             scrolling = false;
             if (stopped || activation.cancelled) return;
-            activation.scrolled = true;
-            request.onPositioned();
+            finishPositioning();
             schedule();
           },
         );
         return;
       }
-      activation.scrolled = true;
-      request.onPositioned();
+      finishPositioning();
     }
 
     clear();
