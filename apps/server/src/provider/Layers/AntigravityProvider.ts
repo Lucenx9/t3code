@@ -269,6 +269,8 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
       const { message: _previousMessage, ...draft } = state.draft;
       const workspaces = draft.workspaceSnapshots ?? [];
       const workspace = cwd ? workspaces.find((entry) => entry.cwd === cwd) : undefined;
+      const shouldIncludeWorkspace =
+        cwd !== undefined && (workspace !== undefined || discoveredSkills.has(cwd));
       return {
         authRevision: state.authRevision + 1,
         draft: {
@@ -284,7 +286,7 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
           checkedAt: updatedAt,
           models: buildAntigravityModelsFromSession(started.sessionSetupResult),
           supportsTextGeneration,
-          ...(cwd
+          ...(shouldIncludeWorkspace
             ? {
                 workspaceSnapshots: [
                   ...workspaces.filter((entry) => entry.cwd !== cwd),
@@ -292,7 +294,7 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
                     cwd,
                     checkedAt: updatedAt,
                     slashCommands: workspace?.slashCommands ?? draft.slashCommands,
-                    skills: workspace?.skills ?? discoveredSkills.get(cwd) ?? [],
+                    skills: discoveredSkills.get(cwd) ?? workspace?.skills ?? [],
                   },
                 ].slice(-MAX_WORKSPACE_SNAPSHOTS),
               }
@@ -320,6 +322,9 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
     const updatedAt = DateTime.formatIso(yield* DateTime.now);
     yield* SubscriptionRef.update(metadata, (state) => {
       if (state.draft.auth.status === "unauthenticated") return state;
+      const existing = cwd
+        ? state.draft.workspaceSnapshots?.find((entry) => entry.cwd === cwd)
+        : undefined;
       return {
         ...state,
         draft: {
@@ -333,10 +338,7 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
                     cwd,
                     checkedAt: updatedAt,
                     slashCommands,
-                    skills:
-                      state.draft.workspaceSnapshots?.find((entry) => entry.cwd === cwd)?.skills ??
-                      discoveredSkills.get(cwd) ??
-                      [],
+                    skills: discoveredSkills.get(cwd) ?? existing?.skills ?? [],
                   },
                 ].slice(-MAX_WORKSPACE_SNAPSHOTS),
               }
@@ -374,10 +376,36 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
     cwd: string,
     skills?: ServerProvider["skills"],
   ) {
-    if (skills) discoveredSkills.set(cwd, skills);
+    if (skills) {
+      discoveredSkills.set(cwd, skills);
+      const updatedAt = DateTime.formatIso(yield* DateTime.now);
+      yield* SubscriptionRef.update(metadata, (state) => {
+        const existing = state.draft.workspaceSnapshots ?? [];
+        const match = existing.find((entry) => entry.cwd === cwd);
+        return {
+          ...state,
+          draft: {
+            ...state.draft,
+            workspaceSnapshots: match
+              ? existing.map((entry) =>
+                  entry.cwd === cwd ? { ...entry, skills, checkedAt: updatedAt } : entry,
+                )
+              : [
+                  ...existing,
+                  {
+                    cwd,
+                    checkedAt: updatedAt,
+                    slashCommands: state.draft.slashCommands,
+                    skills,
+                  },
+                ].slice(-MAX_WORKSPACE_SNAPSHOTS),
+          },
+        };
+      });
+    }
     const snapshot = yield* getSnapshot;
     const workspace = snapshot.workspaceSnapshots?.find((entry) => entry.cwd === cwd);
-    const resolvedSkills = skills ?? workspace?.skills ?? discoveredSkills.get(cwd) ?? [];
+    const resolvedSkills = skills ?? discoveredSkills.get(cwd) ?? workspace?.skills ?? [];
     return workspace
       ? { ...snapshot, slashCommands: workspace.slashCommands, skills: resolvedSkills }
       : { ...snapshot, skills: resolvedSkills };
