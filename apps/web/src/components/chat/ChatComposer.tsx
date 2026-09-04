@@ -797,6 +797,7 @@ import {
   formatProviderSkillDisplayName,
   getProviderSlashCommandsForSlashMenu,
   getProviderSkillsForSlashMenu,
+  hasCompleteProviderWorkspaceSnapshot,
   resolveProviderSkillsForCwd,
   resolveProviderSlashCommandsForCwd,
 } from "@t3tools/client-runtime/providerSkills";
@@ -1625,26 +1626,22 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   });
   const workspaceRefreshKeyRef = useRef<string | null>(null);
   const workspaceRefreshRetryRef = useRef<{ key: string; notBefore: number } | null>(null);
-  const hadWorkspaceSnapshotRef = useRef(false);
+  const hasCompleteWorkspaceSnapshot = Boolean(
+    selectedProviderStatus && hasCompleteProviderWorkspaceSnapshot(selectedProviderStatus, gitCwd),
+  );
+  const hadCompleteWorkspaceSnapshotRef = useRef(false);
   useEffect(() => {
-    const hasWorkspaceSnapshot = Boolean(
-      gitCwd &&
-      selectedProviderStatus?.workspaceSnapshots?.some((snapshot) => snapshot.cwd === gitCwd),
-    );
-    if (hadWorkspaceSnapshotRef.current && !hasWorkspaceSnapshot) {
+    if (hadCompleteWorkspaceSnapshotRef.current && !hasCompleteWorkspaceSnapshot) {
       workspaceRefreshKeyRef.current = null;
       workspaceRefreshRetryRef.current = null;
     }
-    hadWorkspaceSnapshotRef.current = hasWorkspaceSnapshot;
-  }, [gitCwd, selectedProviderStatus]);
+    hadCompleteWorkspaceSnapshotRef.current = hasCompleteWorkspaceSnapshot;
+  }, [hasCompleteWorkspaceSnapshot]);
   useEffect(() => {
     if (!gitCwd || !selectedProviderEntry) return;
     const key = `${environmentId}:${selectedProviderEntry.instanceId}:${gitCwd}`;
-    const hasWorkspaceSnapshot = selectedProviderStatus?.workspaceSnapshots?.some(
-      (snapshot) => snapshot.cwd === gitCwd,
-    );
     if (workspaceRefreshKeyRef.current === key) return;
-    if (hasWorkspaceSnapshot) {
+    if (hasCompleteWorkspaceSnapshot) {
       workspaceRefreshKeyRef.current = key;
       workspaceRefreshRetryRef.current = null;
       return;
@@ -1664,16 +1661,25 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       environmentId,
       input: { instanceId: selectedProviderEntry.instanceId, cwd: gitCwd },
     }).then((result) => {
-      const hasWorkspaceSnapshot =
+      const refreshCompleted =
         result._tag === "Success" &&
-        result.value.providers
-          .find((provider) => provider.instanceId === selectedProviderEntry.instanceId)
-          ?.workspaceSnapshots?.some((snapshot) => snapshot.cwd === gitCwd);
-      if (!hasWorkspaceSnapshot && workspaceRefreshKeyRef.current === key) {
+        result.value.providers.some(
+          (provider) =>
+            provider.instanceId === selectedProviderEntry.instanceId &&
+            hasCompleteProviderWorkspaceSnapshot(provider, gitCwd),
+        );
+      if (!refreshCompleted && workspaceRefreshKeyRef.current === key) {
         retryLater();
       }
     }, retryLater);
-  }, [environmentId, gitCwd, prompt, refreshProviders, selectedProviderEntry]);
+  }, [
+    environmentId,
+    gitCwd,
+    hasCompleteWorkspaceSnapshot,
+    prompt,
+    refreshProviders,
+    selectedProviderEntry,
+  ]);
   const selectedProviderModels = useMemo<ReadonlyArray<ServerProvider["models"][number]>>(
     () => selectedProviderEntry?.models ?? [],
     [selectedProviderEntry],

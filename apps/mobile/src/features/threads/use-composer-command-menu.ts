@@ -13,6 +13,7 @@ import {
 import {
   dedupeProviderSkillsByName,
   getProviderSkillsForSlashMenu,
+  hasCompleteProviderWorkspaceSnapshot,
   isProviderSkillUserInvocable,
   resolveProviderSkillsForCwd,
 } from "@t3tools/client-runtime/providerSkills";
@@ -189,25 +190,25 @@ export function useComposerCommandMenu({
     reportFailure: false,
   });
   const selectedProviderInstanceId = selectedProviderStatus?.instanceId;
-  const hasWorkspaceSnapshot = Boolean(
-    projectCwd &&
-    selectedProviderStatus?.workspaceSnapshots?.some((snapshot) => snapshot.cwd === projectCwd),
+  const hasCompleteWorkspaceSnapshot = Boolean(
+    selectedProviderStatus &&
+    hasCompleteProviderWorkspaceSnapshot(selectedProviderStatus, projectCwd),
   );
   const workspaceRefreshKeyRef = useRef<string | null>(null);
   const workspaceRefreshRetryRef = useRef<{ key: string; notBefore: number } | null>(null);
-  const hadWorkspaceSnapshotRef = useRef(false);
+  const hadCompleteWorkspaceSnapshotRef = useRef(false);
   useEffect(() => {
-    if (hadWorkspaceSnapshotRef.current && !hasWorkspaceSnapshot) {
+    if (hadCompleteWorkspaceSnapshotRef.current && !hasCompleteWorkspaceSnapshot) {
       workspaceRefreshKeyRef.current = null;
       workspaceRefreshRetryRef.current = null;
     }
-    hadWorkspaceSnapshotRef.current = hasWorkspaceSnapshot;
-  }, [hasWorkspaceSnapshot]);
+    hadCompleteWorkspaceSnapshotRef.current = hasCompleteWorkspaceSnapshot;
+  }, [hasCompleteWorkspaceSnapshot]);
   useEffect(() => {
     if (!environmentId || !projectCwd || !selectedProviderInstanceId) return;
     const key = `${environmentId}:${selectedProviderInstanceId}:${projectCwd}`;
     if (workspaceRefreshKeyRef.current === key) return;
-    if (hasWorkspaceSnapshot) {
+    if (hasCompleteWorkspaceSnapshot) {
       workspaceRefreshKeyRef.current = key;
       workspaceRefreshRetryRef.current = null;
       return;
@@ -227,19 +228,21 @@ export function useComposerCommandMenu({
       environmentId,
       input: { instanceId: selectedProviderInstanceId, cwd: projectCwd },
     }).then((result) => {
-      const refreshed =
+      const refreshCompleted =
         result._tag === "Success" &&
-        result.value.providers
-          .find((provider) => provider.instanceId === selectedProviderInstanceId)
-          ?.workspaceSnapshots?.some((snapshot) => snapshot.cwd === projectCwd);
-      if (!refreshed && workspaceRefreshKeyRef.current === key) {
+        result.value.providers.some(
+          (provider) =>
+            provider.instanceId === selectedProviderInstanceId &&
+            hasCompleteProviderWorkspaceSnapshot(provider, projectCwd),
+        );
+      if (!refreshCompleted && workspaceRefreshKeyRef.current === key) {
         retryLater();
       }
     }, retryLater);
   }, [
     draftMessage,
     environmentId,
-    hasWorkspaceSnapshot,
+    hasCompleteWorkspaceSnapshot,
     projectCwd,
     refreshProviders,
     selectedProviderInstanceId,

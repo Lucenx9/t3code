@@ -111,6 +111,14 @@ function resolveProviderWorkspaceSnapshot(
   return provider.workspaceSnapshots?.find((snapshot) => snapshot.cwd === cwd);
 }
 
+export function hasCompleteProviderWorkspaceSnapshot(
+  provider: ServerProvider,
+  cwd: string | null | undefined,
+): boolean {
+  const snapshot = resolveProviderWorkspaceSnapshot(provider, cwd);
+  return snapshot !== undefined && snapshot.skillsDiscoveryPending !== true;
+}
+
 export function resolveProviderSkillsForCwd(
   provider: ServerProvider,
   cwd: string | null | undefined,

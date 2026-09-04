@@ -6,6 +6,7 @@ import {
   formatProviderSkillDisplayName,
   getProviderSlashCommandsForSlashMenu,
   getProviderSkillsForSlashMenu,
+  hasCompleteProviderWorkspaceSnapshot,
   resolveProviderSkillsForCwd,
   resolveProviderSlashCommandsForCwd,
   resolveProviderSkillSourceKind,
@@ -238,6 +239,22 @@ describe("resolveProviderSkillSourceKind", () => {
 });
 
 describe("workspace provider snapshots", () => {
+  it("keeps pending workspace snapshots retryable", () => {
+    const pendingProvider = {
+      ...provider,
+      workspaceSnapshots: provider.workspaceSnapshots.map((snapshot) => ({
+        ...snapshot,
+        skillsDiscoveryPending: true,
+      })),
+    } satisfies ServerProvider;
+
+    expect(hasCompleteProviderWorkspaceSnapshot(provider, "/workspace/project-a")).toBe(true);
+    expect(hasCompleteProviderWorkspaceSnapshot(pendingProvider, "/workspace/project-a")).toBe(
+      false,
+    );
+    expect(hasCompleteProviderWorkspaceSnapshot(provider, "/workspace/project-b")).toBe(false);
+  });
+
   it("uses the cwd snapshot after a provider session has populated it", () => {
     expect(resolveProviderSkillsForCwd(provider, "/workspace/project-a")).toEqual([
       { name: "project", path: "/workspace/project-a/SKILL.md", enabled: true },
