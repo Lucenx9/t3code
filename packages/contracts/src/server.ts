@@ -120,6 +120,8 @@ export const ServerProviderWorkspaceSnapshot = Schema.Struct({
   checkedAt: IsoDateTime,
   slashCommands: Schema.Array(ServerProviderSlashCommand),
   skills: Schema.Array(ServerProviderSkill),
+  /** Scoped commands are known, but workspace skills should be discovered again. */
+  skillsDiscoveryPending: Schema.optional(Schema.Boolean),
 });
 export type ServerProviderWorkspaceSnapshot = typeof ServerProviderWorkspaceSnapshot.Type;
 

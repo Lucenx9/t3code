@@ -643,13 +643,24 @@ it.layer(testLayer)("Antigravity provider snapshots", (it) => {
           const beforeDiscovery = yield* harness.provider.snapshot.getSnapshot;
           expect(
             beforeDiscovery.workspaceSnapshots?.find((entry) => entry.cwd === "/workspace"),
-          ).toBeUndefined();
+          ).toMatchObject({
+            slashCommands: commands,
+            skills: [],
+            skillsDiscoveryPending: true,
+          });
+          const otherCommands = [{ name: "review", description: "Review changes" }];
+          yield* harness.provider.onAvailableCommands(otherCommands, "/other-workspace");
+          const afterOtherWorkspace = yield* harness.provider.snapshot.getSnapshot;
+          expect(
+            afterOtherWorkspace.workspaceSnapshots?.find((entry) => entry.cwd === "/workspace")
+              ?.slashCommands,
+          ).toEqual(commands);
           const discovered = yield* harness.provider.snapshotForCwd("/workspace", skills);
           expect(discovered.skills).toEqual(skills);
           const snapshot = yield* harness.provider.snapshot.getSnapshot;
           expect(
-            snapshot.workspaceSnapshots?.find((entry) => entry.cwd === "/workspace")?.skills,
-          ).toEqual(skills);
+            snapshot.workspaceSnapshots?.find((entry) => entry.cwd === "/workspace"),
+          ).toMatchObject({ skills, skillsDiscoveryPending: false });
           expect((yield* harness.provider.snapshotForCwd("/workspace")).skills).toEqual(skills);
           yield* harness.provider.onAvailableCommands(commands, "/workspace");
           const afterCommands = yield* harness.provider.snapshot.getSnapshot;
@@ -660,7 +671,7 @@ it.layer(testLayer)("Antigravity provider snapshots", (it) => {
       ),
   );
 
-  it.effect("does not retain empty skill discoveries as workspace snapshots", () =>
+  it.effect("keeps empty skill discoveries retryable while preserving workspace commands", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const harness = yield* makeHarness();
@@ -674,7 +685,11 @@ it.layer(testLayer)("Antigravity provider snapshots", (it) => {
         const afterCommands = yield* harness.provider.snapshot.getSnapshot;
         expect(
           afterCommands.workspaceSnapshots?.find((entry) => entry.cwd === "/empty"),
-        ).toBeUndefined();
+        ).toMatchObject({
+          slashCommands: commands,
+          skills: [],
+          skillsDiscoveryPending: true,
+        });
 
         const skills = [
           {
@@ -690,7 +705,11 @@ it.layer(testLayer)("Antigravity provider snapshots", (it) => {
         const existing = yield* harness.provider.snapshot.getSnapshot;
         expect(
           existing.workspaceSnapshots?.find((entry) => entry.cwd === "/workspace"),
-        ).toMatchObject({ slashCommands: commands, skills: [] });
+        ).toMatchObject({
+          slashCommands: commands,
+          skills: [],
+          skillsDiscoveryPending: true,
+        });
       }),
     ),
   );

@@ -80,6 +80,12 @@ const hasModelCapabilities = (model: ServerProvider["models"][number]): boolean 
 
 const MAX_WORKSPACE_SNAPSHOTS_PER_PROVIDER = 16;
 
+const hasCompleteWorkspaceSnapshot = (provider: ServerProvider, cwd: string): boolean =>
+  provider.workspaceSnapshots?.some(
+    (snapshot) => snapshot.cwd === cwd && snapshot.skillsDiscoveryPending !== true,
+  ) ?? false;
+
+/** Drivers without an explicit workspace list return cwd-scoped fields at the snapshot root. */
 const shouldCacheWorkspaceSnapshot = (snapshot: ServerProvider, cwd: string): boolean =>
   snapshot.status !== "error" &&
   (snapshot.workspaceSnapshots === undefined ||
@@ -90,11 +96,17 @@ export function upsertProviderWorkspaceSnapshot(
   cwd: string,
   scopedSnapshot: ServerProvider,
 ): ServerProvider {
+  const scopedWorkspaceSnapshot = scopedSnapshot.workspaceSnapshots?.find(
+    (snapshot) => snapshot.cwd === cwd,
+  );
   const workspaceSnapshot = {
     cwd,
     checkedAt: scopedSnapshot.checkedAt,
     slashCommands: scopedSnapshot.slashCommands,
     skills: scopedSnapshot.skills,
+    ...(scopedWorkspaceSnapshot?.skillsDiscoveryPending !== undefined
+      ? { skillsDiscoveryPending: scopedWorkspaceSnapshot.skillsDiscoveryPending }
+      : {}),
   } satisfies NonNullable<ServerProvider["workspaceSnapshots"]>[number];
   return {
     ...provider,
@@ -767,11 +779,7 @@ export const ProviderRegistryLive = Layer.effect(
     }) {
       const providers = yield* Ref.get(providersRef);
       const provider = providers.find((candidate) => candidate.instanceId === input.instanceId);
-      if (
-        !provider ||
-        !provider.enabled ||
-        provider.workspaceSnapshots?.some((s) => s.cwd === input.cwd)
-      ) {
+      if (!provider || !provider.enabled || hasCompleteWorkspaceSnapshot(provider, input.cwd)) {
         return providers;
       }
       const instance = yield* instanceRegistry.getInstance(input.instanceId);
@@ -794,7 +802,7 @@ export const ProviderRegistryLive = Layer.effect(
                   return Ref.modify(providersRef, (currentProviders) => {
                     const nextProviders = currentProviders.map((candidate) =>
                       candidate.instanceId === input.instanceId &&
-                      !candidate.workspaceSnapshots?.some((s) => s.cwd === input.cwd)
+                      !hasCompleteWorkspaceSnapshot(candidate, input.cwd)
                         ? upsertProviderWorkspaceSnapshot(candidate, input.cwd, scopedSnapshot)
                         : candidate,
                     );

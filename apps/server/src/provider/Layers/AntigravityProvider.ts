@@ -295,6 +295,7 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
                     checkedAt: updatedAt,
                     slashCommands: workspace?.slashCommands ?? draft.slashCommands,
                     skills: discoveredSkills.get(cwd) ?? workspace?.skills ?? [],
+                    skillsDiscoveryPending: !discoveredSkills.has(cwd),
                   },
                 ].slice(-MAX_WORKSPACE_SNAPSHOTS),
               }
@@ -325,14 +326,12 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
       const existing = cwd
         ? state.draft.workspaceSnapshots?.find((entry) => entry.cwd === cwd)
         : undefined;
-      const shouldIncludeWorkspace =
-        cwd !== undefined && (existing !== undefined || discoveredSkills.has(cwd));
       return {
         ...state,
         draft: {
           ...state.draft,
           slashCommands,
-          ...(shouldIncludeWorkspace
+          ...(cwd
             ? {
                 workspaceSnapshots: [
                   ...(state.draft.workspaceSnapshots ?? []).filter((entry) => entry.cwd !== cwd),
@@ -341,6 +340,7 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
                     checkedAt: updatedAt,
                     slashCommands,
                     skills: discoveredSkills.get(cwd) ?? existing?.skills ?? [],
+                    skillsDiscoveryPending: !discoveredSkills.has(cwd),
                   },
                 ].slice(-MAX_WORKSPACE_SNAPSHOTS),
               }
@@ -395,7 +395,14 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
             ...state.draft,
             workspaceSnapshots: match
               ? existing.map((entry) =>
-                  entry.cwd === cwd ? { ...entry, skills, checkedAt: updatedAt } : entry,
+                  entry.cwd === cwd
+                    ? {
+                        ...entry,
+                        skills,
+                        skillsDiscoveryPending: skills.length === 0,
+                        checkedAt: updatedAt,
+                      }
+                    : entry,
                 )
               : [
                   ...existing,
@@ -404,6 +411,7 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
                     checkedAt: updatedAt,
                     slashCommands: state.draft.slashCommands,
                     skills,
+                    skillsDiscoveryPending: false,
                   },
                 ].slice(-MAX_WORKSPACE_SNAPSHOTS),
           },
