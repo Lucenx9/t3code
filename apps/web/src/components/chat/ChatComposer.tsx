@@ -1624,38 +1624,50 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const refreshProviders = useAtomCommand(serverEnvironment.refreshProviders, {
     reportFailure: false,
   });
+  const workspaceRefreshKey =
+    gitCwd && selectedProviderEntry
+      ? `${environmentId}:${selectedProviderEntry.instanceId}:${gitCwd}`
+      : null;
   const workspaceRefreshKeyRef = useRef<string | null>(null);
-  const workspaceRefreshRetryRef = useRef<{ key: string; notBefore: number } | null>(null);
+  const workspaceRefreshRetryTimerRef = useRef<number | null>(null);
+  const [workspaceRefreshRetryVersion, setWorkspaceRefreshRetryVersion] = useState(0);
   const hasCompleteWorkspaceSnapshot = Boolean(
     selectedProviderStatus && hasCompleteProviderWorkspaceSnapshot(selectedProviderStatus, gitCwd),
   );
-  const hadCompleteWorkspaceSnapshotRef = useRef(false);
+  const hasCompleteWorkspaceSnapshotRef = useRef(hasCompleteWorkspaceSnapshot);
   useEffect(() => {
-    if (hadCompleteWorkspaceSnapshotRef.current && !hasCompleteWorkspaceSnapshot) {
-      workspaceRefreshKeyRef.current = null;
-      workspaceRefreshRetryRef.current = null;
-    }
-    hadCompleteWorkspaceSnapshotRef.current = hasCompleteWorkspaceSnapshot;
+    hasCompleteWorkspaceSnapshotRef.current = hasCompleteWorkspaceSnapshot;
   }, [hasCompleteWorkspaceSnapshot]);
   useEffect(() => {
-    if (!gitCwd || !selectedProviderEntry) return;
-    const key = `${environmentId}:${selectedProviderEntry.instanceId}:${gitCwd}`;
-    if (workspaceRefreshKeyRef.current === key) return;
+    workspaceRefreshKeyRef.current = null;
+    return () => {
+      if (workspaceRefreshRetryTimerRef.current !== null) {
+        window.clearTimeout(workspaceRefreshRetryTimerRef.current);
+        workspaceRefreshRetryTimerRef.current = null;
+      }
+    };
+  }, [hasCompleteWorkspaceSnapshot, workspaceRefreshKey]);
+  useEffect(() => {
+    if (!gitCwd || !selectedProviderEntry || workspaceRefreshKey === null) return;
+    const key = workspaceRefreshKey;
     if (hasCompleteWorkspaceSnapshot) {
       workspaceRefreshKeyRef.current = key;
-      workspaceRefreshRetryRef.current = null;
       return;
     }
-    const retry = workspaceRefreshRetryRef.current;
-    if (retry?.key === key && Date.now() < retry.notBefore) return;
+    if (workspaceRefreshKeyRef.current === key) return;
     workspaceRefreshKeyRef.current = key;
     const retryLater = () => {
-      if (workspaceRefreshKeyRef.current !== key) return;
-      workspaceRefreshKeyRef.current = null;
-      workspaceRefreshRetryRef.current = {
-        key,
-        notBefore: Date.now() + WORKSPACE_SNAPSHOT_RETRY_COOLDOWN_MS,
-      };
+      if (workspaceRefreshKeyRef.current !== key || hasCompleteWorkspaceSnapshotRef.current) {
+        return;
+      }
+      workspaceRefreshRetryTimerRef.current = window.setTimeout(() => {
+        workspaceRefreshRetryTimerRef.current = null;
+        if (workspaceRefreshKeyRef.current !== key || hasCompleteWorkspaceSnapshotRef.current) {
+          return;
+        }
+        workspaceRefreshKeyRef.current = null;
+        setWorkspaceRefreshRetryVersion((version) => version + 1);
+      }, WORKSPACE_SNAPSHOT_RETRY_COOLDOWN_MS);
     };
     void refreshProviders({
       environmentId,
@@ -1679,6 +1691,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     prompt,
     refreshProviders,
     selectedProviderEntry,
+    workspaceRefreshKey,
+    workspaceRefreshRetryVersion,
   ]);
   const selectedProviderModels = useMemo<ReadonlyArray<ServerProvider["models"][number]>>(
     () => selectedProviderEntry?.models ?? [],

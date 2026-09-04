@@ -190,39 +190,58 @@ export function useComposerCommandMenu({
     reportFailure: false,
   });
   const selectedProviderInstanceId = selectedProviderStatus?.instanceId;
+  const workspaceRefreshKey =
+    environmentId && projectCwd && selectedProviderInstanceId
+      ? `${environmentId}:${selectedProviderInstanceId}:${projectCwd}`
+      : null;
   const hasCompleteWorkspaceSnapshot = Boolean(
     selectedProviderStatus &&
     hasCompleteProviderWorkspaceSnapshot(selectedProviderStatus, projectCwd),
   );
   const workspaceRefreshKeyRef = useRef<string | null>(null);
-  const workspaceRefreshRetryRef = useRef<{ key: string; notBefore: number } | null>(null);
-  const hadCompleteWorkspaceSnapshotRef = useRef(false);
+  const workspaceRefreshRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [workspaceRefreshRetryVersion, setWorkspaceRefreshRetryVersion] = useState(0);
+  const hasCompleteWorkspaceSnapshotRef = useRef(hasCompleteWorkspaceSnapshot);
   useEffect(() => {
-    if (hadCompleteWorkspaceSnapshotRef.current && !hasCompleteWorkspaceSnapshot) {
-      workspaceRefreshKeyRef.current = null;
-      workspaceRefreshRetryRef.current = null;
-    }
-    hadCompleteWorkspaceSnapshotRef.current = hasCompleteWorkspaceSnapshot;
+    hasCompleteWorkspaceSnapshotRef.current = hasCompleteWorkspaceSnapshot;
   }, [hasCompleteWorkspaceSnapshot]);
   useEffect(() => {
-    if (!environmentId || !projectCwd || !selectedProviderInstanceId) return;
-    const key = `${environmentId}:${selectedProviderInstanceId}:${projectCwd}`;
-    if (workspaceRefreshKeyRef.current === key) return;
-    if (hasCompleteWorkspaceSnapshot) {
-      workspaceRefreshKeyRef.current = key;
-      workspaceRefreshRetryRef.current = null;
+    workspaceRefreshKeyRef.current = null;
+    return () => {
+      if (workspaceRefreshRetryTimerRef.current !== null) {
+        clearTimeout(workspaceRefreshRetryTimerRef.current);
+        workspaceRefreshRetryTimerRef.current = null;
+      }
+    };
+  }, [hasCompleteWorkspaceSnapshot, workspaceRefreshKey]);
+  useEffect(() => {
+    if (
+      !environmentId ||
+      !projectCwd ||
+      !selectedProviderInstanceId ||
+      workspaceRefreshKey === null
+    ) {
       return;
     }
-    const retry = workspaceRefreshRetryRef.current;
-    if (retry?.key === key && Date.now() < retry.notBefore) return;
+    const key = workspaceRefreshKey;
+    if (hasCompleteWorkspaceSnapshot) {
+      workspaceRefreshKeyRef.current = key;
+      return;
+    }
+    if (workspaceRefreshKeyRef.current === key) return;
     workspaceRefreshKeyRef.current = key;
     const retryLater = () => {
-      if (workspaceRefreshKeyRef.current !== key) return;
-      workspaceRefreshKeyRef.current = null;
-      workspaceRefreshRetryRef.current = {
-        key,
-        notBefore: Date.now() + WORKSPACE_SNAPSHOT_RETRY_COOLDOWN_MS,
-      };
+      if (workspaceRefreshKeyRef.current !== key || hasCompleteWorkspaceSnapshotRef.current) {
+        return;
+      }
+      workspaceRefreshRetryTimerRef.current = setTimeout(() => {
+        workspaceRefreshRetryTimerRef.current = null;
+        if (workspaceRefreshKeyRef.current !== key || hasCompleteWorkspaceSnapshotRef.current) {
+          return;
+        }
+        workspaceRefreshKeyRef.current = null;
+        setWorkspaceRefreshRetryVersion((version) => version + 1);
+      }, WORKSPACE_SNAPSHOT_RETRY_COOLDOWN_MS);
     };
     void refreshProviders({
       environmentId,
@@ -246,6 +265,8 @@ export function useComposerCommandMenu({
     projectCwd,
     refreshProviders,
     selectedProviderInstanceId,
+    workspaceRefreshKey,
+    workspaceRefreshRetryVersion,
   ]);
 
   const trigger = useMemo(() => {
