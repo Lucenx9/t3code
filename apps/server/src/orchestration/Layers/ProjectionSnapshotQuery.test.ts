@@ -1962,6 +1962,13 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         (yield* snapshotQuery.searchThreads({ query: "hidden needle" })).matches,
         [],
       );
+      assert.equal(
+        (yield* snapshotQuery.findThread({
+          threadId: ThreadId.make("thread-hidden"),
+          query: "hidden needle",
+        })).total,
+        0,
+      );
 
       const firstThreadMatch = yield* snapshotQuery.findThread({
         threadId: ThreadId.make("thread-active"),

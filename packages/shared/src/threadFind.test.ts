@@ -21,6 +21,15 @@ describe("threadFindVisibleText", () => {
     expect(threadFindVisibleText("assistant", "one\n\n- two\n- three")).toBe("one two three");
   });
 
+  it("includes sanitized text rendered from raw HTML", () => {
+    expect(threadFindVisibleText("assistant", "<div>deploy <strong>failed</strong></div>")).toBe(
+      "deploy failed",
+    );
+    expect(threadFindVisibleText("assistant", "<script>hidden()</script><p>visible</p>")).toBe(
+      "visible",
+    );
+  });
+
   it("reduces terminal payloads to their visible chip labels and retains element labels", () => {
     const prompt = [
       "Please fix the button",

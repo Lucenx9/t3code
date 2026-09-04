@@ -1,28 +1,57 @@
+import rehypeRaw from "rehype-raw";
+import rehypeSanitize from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
 import remarkParse from "remark-parse";
+import remarkRehype from "remark-rehype";
 import { unified } from "unified";
 
-type MarkdownNode = {
+type ThreadFindHtmlNode = {
   readonly type: string;
   readonly value?: string;
-  readonly children?: ReadonlyArray<MarkdownNode>;
+  readonly tagName?: string;
+  readonly children?: ReadonlyArray<ThreadFindHtmlNode>;
 };
 
-const parser = unified().use(remarkParse).use(remarkGfm);
-const BLOCK_NODE_TYPES = new Set([
+const parser = unified()
+  .use(remarkParse)
+  .use(remarkGfm)
+  .use(remarkRehype, { allowDangerousHtml: true })
+  .use(rehypeRaw)
+  .use(rehypeSanitize)
+  .freeze();
+const BLOCK_TAG_NAMES = new Set([
+  "address",
+  "article",
+  "aside",
   "blockquote",
-  "code",
-  "definition",
-  "footnoteDefinition",
-  "heading",
-  "list",
-  "listItem",
+  "dd",
+  "div",
+  "dl",
+  "dt",
+  "figcaption",
+  "figure",
+  "footer",
+  "h1",
+  "h2",
+  "h3",
+  "h4",
+  "h5",
+  "h6",
+  "header",
+  "hr",
+  "li",
+  "main",
+  "nav",
+  "ol",
   "paragraph",
-  "root",
+  "p",
+  "pre",
+  "section",
   "table",
-  "tableCell",
-  "tableRow",
-  "thematicBreak",
+  "td",
+  "th",
+  "tr",
+  "ul",
 ]);
 
 const TRAILING_USER_CONTEXT =
@@ -107,16 +136,16 @@ export function threadFindMessageMarkdown(role: "user" | "assistant", text: stri
   return [...visibleSummaries, withoutReviewTags].filter((part) => part.length > 0).join("\n\n");
 }
 
-function appendMarkdownText(node: MarkdownNode, parts: string[]): void {
-  const block = BLOCK_NODE_TYPES.has(node.type);
+function appendHtmlText(node: ThreadFindHtmlNode, parts: string[]): void {
+  const block = node.type === "root" || BLOCK_TAG_NAMES.has(node.tagName ?? "");
   if (block) parts.push("\n");
 
-  if (node.type === "text" || node.type === "inlineCode" || node.type === "code") {
+  if (node.type === "text") {
     parts.push(node.value ?? "");
-  } else if (node.type === "break") {
+  } else if (node.tagName === "br") {
     parts.push("\n");
-  } else if (node.type !== "image" && node.type !== "imageReference" && node.type !== "html") {
-    for (const child of node.children ?? []) appendMarkdownText(child, parts);
+  } else {
+    for (const child of node.children ?? []) appendHtmlText(child, parts);
   }
 
   if (block) parts.push("\n");
@@ -124,9 +153,10 @@ function appendMarkdownText(node: MarkdownNode, parts: string[]): void {
 
 /** Text users can actually find in rendered message bodies, with layout whitespace collapsed. */
 export function threadFindVisibleText(role: "user" | "assistant", text: string): string {
-  const root = parser.parse(threadFindMessageMarkdown(role, text)) as MarkdownNode;
+  const markdownRoot = parser.parse(threadFindMessageMarkdown(role, text));
+  const root = parser.runSync(markdownRoot) as ThreadFindHtmlNode;
   const parts: string[] = [];
-  appendMarkdownText(root, parts);
+  appendHtmlText(root, parts);
   return parts.join("").replace(/\s+/gu, " ").trim();
 }
 

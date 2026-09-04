@@ -159,7 +159,11 @@ export function ThreadFindSource({
   }, [itemKey, listRef, messageId, request]);
 
   return (
-    <div ref={rootRef} data-thread-find-source={messageId}>
+    <div
+      ref={rootRef}
+      data-thread-find-source={messageId}
+      className="data-[thread-find-active=true]:rounded-md data-[thread-find-active=true]:bg-primary/[0.18]"
+    >
       {children}
     </div>
   );

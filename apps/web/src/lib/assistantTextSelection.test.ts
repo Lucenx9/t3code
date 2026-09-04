@@ -377,6 +377,20 @@ describe("resolveThreadFindRange", () => {
     expect(range?.endContainer).toBe(second);
     expect(range?.endOffset).toBe(4);
   });
+
+  it("skips rendered code-block chrome that is absent from the searchable projection", () => {
+    const body = textNode("report body");
+    const source = assistantSource(
+      new SelectionNode("DIV", "", { "data-thread-find-exclude": "" }).append(textNode("report")),
+      new SelectionNode("PRE").append(new SelectionNode("CODE").append(body)),
+    );
+
+    const range = resolveThreadFindRange(source as unknown as HTMLElement, "report", 0);
+    expect(range?.startContainer).toBe(body);
+    expect(range?.startOffset).toBe(0);
+    expect(range?.endContainer).toBe(body);
+    expect(range?.endOffset).toBe(6);
+  });
 });
 
 describe("createAssistantTextSelector", () => {

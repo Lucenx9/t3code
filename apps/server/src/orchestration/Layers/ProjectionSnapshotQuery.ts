@@ -84,7 +84,8 @@ const THREAD_DETAIL_ACTIVITY_LIMIT = 500;
 // Snapshot payloads are decoded and projected in small sequential batches so
 // one client read does not retain the raw payloads for the full activity window.
 const THREAD_DETAIL_ACTIVITY_PAYLOAD_BATCH_SIZE = 25;
-const THREAD_FIND_TEXT_CACHE_MAX_ENTRIES = 2_000;
+const THREAD_FIND_TEXT_CACHE_MAX_THREADS = 4;
+const THREAD_FIND_TEXT_CACHE_MAX_CHARACTERS = 16_000_000;
 const ProjectionProjectDbRowSchema = ProjectionProject.mapFields(
   Struct.assign({
     defaultModelSelection: Schema.NullOr(Schema.fromJsonString(ModelSelection)),
@@ -411,22 +412,56 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
   const threadPlanProgress = yield* ThreadPlanProgressService;
   const sql = yield* SqlClient.SqlClient;
   const repositoryIdentityResolver = yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
-  const threadFindTextCache = new Map<string, string>();
-  const resolveThreadFindText = (row: Schema.Schema.Type<typeof ProjectionThreadFindRow>) => {
-    const key = `${row.messageId}\0${row.source}\0${row.updatedAt}`;
-    const cached = threadFindTextCache.get(key);
-    if (cached !== undefined) {
-      threadFindTextCache.delete(key);
-      threadFindTextCache.set(key, cached);
-      return cached;
+  type ThreadFindRow = Schema.Schema.Type<typeof ProjectionThreadFindRow>;
+  type ThreadFindTextCacheEntry = {
+    readonly revision: string;
+    readonly texts: ReadonlyArray<string>;
+    readonly characterCount: number;
+  };
+  const threadFindTextCache = new Map<ThreadId, ThreadFindTextCacheEntry>();
+  let threadFindTextCacheCharacterCount = 0;
+  const threadFindRevision = (rows: ReadonlyArray<ThreadFindRow>) => {
+    let revisionHash = 2_166_136_261;
+    for (const row of rows) {
+      const revisionPart = `${row.messageId}\0${row.turnId ?? ""}\0${row.source}\0${row.updatedAt}`;
+      for (let index = 0; index < revisionPart.length; index += 1) {
+        revisionHash = Math.imul(revisionHash ^ revisionPart.charCodeAt(index), 16_777_619);
+      }
     }
-    const visibleText = threadFindVisibleText(row.source, row.text);
-    threadFindTextCache.set(key, visibleText);
-    if (threadFindTextCache.size > THREAD_FIND_TEXT_CACHE_MAX_ENTRIES) {
-      const oldestKey = threadFindTextCache.keys().next().value;
-      if (oldestKey !== undefined) threadFindTextCache.delete(oldestKey);
+    return `${rows.length.toString(36)}-${(revisionHash >>> 0).toString(36)}`;
+  };
+  const resolveThreadFindTexts = (
+    threadId: ThreadId,
+    revision: string,
+    rows: ReadonlyArray<ThreadFindRow>,
+  ): ReadonlyArray<string> => {
+    const cached = threadFindTextCache.get(threadId);
+    if (cached?.revision === revision) {
+      threadFindTextCache.delete(threadId);
+      threadFindTextCache.set(threadId, cached);
+      return cached.texts;
     }
-    return visibleText;
+    if (cached) {
+      threadFindTextCache.delete(threadId);
+      threadFindTextCacheCharacterCount -= cached.characterCount;
+    }
+    const texts = rows.map((row) => threadFindVisibleText(row.source, row.text));
+    const characterCount = texts.reduce((sum, text) => sum + text.length, 0);
+    if (characterCount > THREAD_FIND_TEXT_CACHE_MAX_CHARACTERS) return texts;
+
+    threadFindTextCache.set(threadId, { revision, texts, characterCount });
+    threadFindTextCacheCharacterCount += characterCount;
+    while (
+      threadFindTextCache.size > THREAD_FIND_TEXT_CACHE_MAX_THREADS ||
+      threadFindTextCacheCharacterCount > THREAD_FIND_TEXT_CACHE_MAX_CHARACTERS
+    ) {
+      const oldestThreadId = threadFindTextCache.keys().next().value;
+      if (oldestThreadId === undefined) break;
+      const oldest = threadFindTextCache.get(oldestThreadId);
+      threadFindTextCache.delete(oldestThreadId);
+      threadFindTextCacheCharacterCount -= oldest?.characterCount ?? 0;
+    }
+    return texts;
   };
   const repositoryIdentityResolutionConcurrency = 4;
   const resolveRepositoryIdentitiesForProjects = Effect.fn(
@@ -959,6 +994,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           ON projects.project_id = threads.project_id
         WHERE messages.thread_id = ${threadId}
           AND threads.deleted_at IS NULL
+          AND threads.archived_at IS NULL
           AND projects.deleted_at IS NULL
           AND messages.is_streaming = 0
           AND (
@@ -2634,9 +2670,9 @@ pending_approval_requests AS (
         ),
       ),
     );
-    const counts = rows.map((row) =>
-      countThreadFindOccurrences(resolveThreadFindText(row), input.query),
-    );
+    const revision = threadFindRevision(rows);
+    const texts = resolveThreadFindTexts(input.threadId, revision, rows);
+    const counts = texts.map((text) => countThreadFindOccurrences(text, input.query));
     const total = counts.reduce((sum, count) => sum + count, 0);
     const limit = input.limit ?? THREAD_FIND_RESULT_LIMIT;
     const startIndex = total === 0 ? 0 : Math.min(input.startIndex ?? 0, total - 1);
@@ -2660,15 +2696,8 @@ pending_approval_requests AS (
       if (matches.length >= limit) break;
     }
 
-    let revisionHash = 2_166_136_261;
-    for (const row of rows) {
-      const revisionPart = `${row.messageId}\0${row.turnId ?? ""}\0${row.source}\0${row.updatedAt}`;
-      for (let index = 0; index < revisionPart.length; index += 1) {
-        revisionHash = Math.imul(revisionHash ^ revisionPart.charCodeAt(index), 16_777_619);
-      }
-    }
     return {
-      revision: `${rows.length.toString(36)}-${(revisionHash >>> 0).toString(36)}`,
+      revision,
       total,
       startIndex,
       matches,

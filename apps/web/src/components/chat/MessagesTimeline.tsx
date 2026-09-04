@@ -2323,6 +2323,7 @@ const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody(prop
   const hasVisibleBody = props.text.trim().length > 0 || props.terminalContexts.length > 0;
   const canCollapse = hasVisibleBody && shouldCollapseUserMessage(props.text);
   const isCollapsed = canCollapse && !expanded && !props.forceExpanded;
+  const showCollapseControl = canCollapse && !props.forceExpanded;
 
   return (
     <div>
@@ -2350,25 +2351,25 @@ const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody(prop
           />
         </div>
       ) : null}
-      {canCollapse || props.footer ? (
+      {showCollapseControl || props.footer ? (
         <div
           className={cn(
             "mt-1.5 flex items-center gap-2",
-            canCollapse && props.footer ? "justify-between" : "justify-end",
+            showCollapseControl && props.footer ? "justify-between" : "justify-end",
           )}
           data-user-message-footer="true"
         >
-          {canCollapse ? (
+          {showCollapseControl ? (
             <Button
               type="button"
               size="xs"
               variant="ghost"
-              aria-expanded={expanded}
+              aria-expanded={!isCollapsed}
               data-scroll-anchor-ignore
               onClick={() => setExpanded((value) => !value)}
               className="-ml-1 h-6 rounded-md px-1.5 text-secondary-label text-xs hover:bg-muted/55 hover:text-message-foreground"
             >
-              {expanded ? "Show less" : "Show full message"}
+              {isCollapsed ? "Show full message" : "Show less"}
             </Button>
           ) : null}
           {props.footer ? (

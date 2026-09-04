@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { orchestrationEnvironment } from "~/state/orchestration";
 import { useEnvironmentQuery } from "~/state/query";
 import { Button } from "../ui/button";
+import { InputGroup, InputGroupAddon, InputGroupInput } from "../ui/input-group";
 import type { ThreadFindRequest } from "./ThreadFindSource";
 import { nextThreadFindIndex, threadFindPageStart } from "./ThreadFindBar.logic";
 
@@ -38,17 +39,6 @@ export function ThreadFindBar({
     });
     return () => window.cancelAnimationFrame(frame);
   }, [focusRequestId]);
-
-  useEffect(() => {
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      event.stopPropagation();
-      onClose();
-    };
-    window.addEventListener("keydown", closeOnEscape, true);
-    return () => window.removeEventListener("keydown", closeOnEscape, true);
-  }, [onClose]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => setSettledQuery(query.trim()), QUERY_DEBOUNCE_MS);
@@ -123,32 +113,44 @@ export function ThreadFindBar({
       aria-label="Find in conversation"
       className="pointer-events-auto absolute top-2 right-3 left-3 z-30 flex h-9 items-center gap-1 rounded-lg border border-border/70 bg-popover/95 p-1 shadow-lg backdrop-blur-md sm:left-auto"
       data-thread-find-bar="true"
+      onKeyDown={(event) => {
+        if (event.key !== "Escape") return;
+        event.preventDefault();
+        event.stopPropagation();
+        onClose();
+      }}
     >
-      <SearchIcon className="ml-1 size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
-      <input
-        ref={inputRef}
-        type="search"
-        value={query}
-        onChange={(event) => {
-          setQuery(event.target.value);
-          setActiveIndex(0);
-          setPageStart(0);
-          revisionRef.current = null;
-          onRequest(null);
-        }}
-        onKeyDown={(event) => {
-          if (event.key === "Enter") {
-            event.preventDefault();
-            event.stopPropagation();
-            move(event.shiftKey ? -1 : 1);
-          }
-        }}
-        placeholder="Find in conversation"
-        aria-label="Find in conversation"
-        autoComplete="off"
-        spellCheck={false}
-        className="h-7 min-w-0 flex-1 appearance-none bg-transparent px-1 text-sm outline-none placeholder:text-muted-foreground sm:w-52 sm:flex-none"
-      />
+      <InputGroup
+        variant="ghost"
+        className="h-7 min-w-0 flex-1 border-0 bg-transparent shadow-none hover:bg-transparent has-[input:focus-visible]:bg-transparent has-[input:focus-visible]:ring-0 sm:w-56 sm:flex-none **:[input]:h-7 **:[input]:px-1 **:[input]:text-sm **:[input]:leading-7"
+      >
+        <InputGroupAddon className="ps-1 pe-0">
+          <SearchIcon className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+        </InputGroupAddon>
+        <InputGroupInput
+          ref={inputRef}
+          type="search"
+          value={query}
+          onChange={(event) => {
+            setQuery(event.target.value);
+            setActiveIndex(0);
+            setPageStart(0);
+            revisionRef.current = null;
+            onRequest(null);
+          }}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              event.stopPropagation();
+              move(event.shiftKey ? -1 : 1);
+            }
+          }}
+          placeholder="Find in conversation"
+          aria-label="Find in conversation"
+          autoComplete="off"
+          spellCheck={false}
+        />
+      </InputGroup>
       <span
         className="min-w-14 px-1 text-right text-muted-foreground text-xs tabular-nums"
         aria-live="polite"
