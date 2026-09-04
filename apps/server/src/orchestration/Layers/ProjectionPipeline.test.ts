@@ -246,6 +246,12 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
         SELECT count FROM thread_shell_updates
       `;
       assert.deepEqual(threadShellUpdates, [{ count: 1 }]);
+      const searchRevisionRows = yield* sql<{ readonly revision: number }>`
+        SELECT searchable_messages_revision AS revision
+        FROM projection_threads
+        WHERE thread_id = 'thread-1'
+      `;
+      assert.deepEqual(searchRevisionRows, [{ revision: 2 }]);
       yield* sql`DROP TRIGGER count_thread_shell_updates`;
       yield* sql`DROP TABLE thread_shell_updates`;
 
@@ -2594,11 +2600,13 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
       const readSummary = sql<{
         readonly latestUserMessageAt: string | null;
         readonly pendingUserInputCount: number;
+        readonly searchableMessagesRevision: number;
         readonly updatedAt: string;
       }>`
         SELECT
           latest_user_message_at AS "latestUserMessageAt",
           pending_user_input_count AS "pendingUserInputCount",
+          searchable_messages_revision AS "searchableMessagesRevision",
           updated_at AS "updatedAt"
         FROM projection_threads
         WHERE thread_id = 'thread-shell-summary'
@@ -2630,6 +2638,7 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
         {
           latestUserMessageAt: "2026-03-01T08:00:02.000Z",
           pendingUserInputCount: 0,
+          searchableMessagesRevision: 1,
           updatedAt: "2026-03-01T08:00:02.000Z",
         },
       ]);
@@ -2662,9 +2671,51 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
         {
           latestUserMessageAt: "2026-03-01T08:00:02.000Z",
           pendingUserInputCount: 0,
+          searchableMessagesRevision: 2,
           updatedAt: "2026-03-01T08:00:03.000Z",
         },
       ]);
+
+      const checkpointEvent = (input: {
+        readonly suffix: string;
+        readonly assistantMessageId: MessageId;
+        readonly occurredAt: string;
+      }) =>
+        appendAndProject({
+          type: "thread.turn-diff-completed",
+          eventId: EventId.make(`evt-shell-summary-diff-${input.suffix}`),
+          aggregateKind: "thread",
+          aggregateId: ThreadId.make("thread-shell-summary"),
+          occurredAt: input.occurredAt,
+          commandId: CommandId.make(`cmd-shell-summary-diff-${input.suffix}`),
+          causationEventId: null,
+          correlationId: CorrelationId.make(`cmd-shell-summary-diff-${input.suffix}`),
+          metadata: {},
+          payload: {
+            threadId: ThreadId.make("thread-shell-summary"),
+            turnId: TurnId.make("turn-shell-summary-1"),
+            checkpointTurnCount: 1,
+            checkpointRef: CheckpointRef.make(`checkpoint-shell-summary-${input.suffix}`),
+            status: "ready" as const,
+            files: [],
+            assistantMessageId: input.assistantMessageId,
+            completedAt: input.occurredAt,
+          },
+        });
+
+      yield* checkpointEvent({
+        suffix: "same",
+        assistantMessageId: MessageId.make("message-shell-summary-assistant"),
+        occurredAt: "2026-03-01T08:00:03.100Z",
+      });
+      assert.equal((yield* readSummary)[0]?.searchableMessagesRevision, 2);
+
+      yield* checkpointEvent({
+        suffix: "changed",
+        assistantMessageId: MessageId.make("message-shell-summary-rebound"),
+        occurredAt: "2026-03-01T08:00:03.200Z",
+      });
+      assert.equal((yield* readSummary)[0]?.searchableMessagesRevision, 3);
 
       // Ordinary tool activities bump updatedAt without touching the
       // user-input counter; user-input lifecycle activities update it.
@@ -2696,6 +2747,7 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
         {
           latestUserMessageAt: "2026-03-01T08:00:02.000Z",
           pendingUserInputCount: 0,
+          searchableMessagesRevision: 3,
           updatedAt: "2026-03-01T08:00:04.000Z",
         },
       ]);
@@ -2738,6 +2790,7 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
         {
           latestUserMessageAt: "2026-03-01T08:00:02.000Z",
           pendingUserInputCount: 1,
+          searchableMessagesRevision: 3,
           updatedAt: "2026-03-01T08:00:05.000Z",
         },
       ]);

@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vite-plus/test";
+import { EnvironmentId, MessageId, ThreadId } from "@t3tools/contracts";
 
+import { serializeAssistantCitation } from "./assistantCitations.ts";
+import { reviewDiffVisibleText } from "./reviewDiffPresentation.ts";
 import {
   countThreadFindOccurrences,
   findThreadFindOccurrence,
@@ -30,6 +33,25 @@ describe("threadFindVisibleText", () => {
     );
   });
 
+  it("projects chips inside raw assistant HTML like the rendered transcript", () => {
+    expect(
+      threadFindVisibleText(
+        "assistant",
+        '<p>Use $show-me and <a href="/workspace/src/a.ts">Open source</a>.</p>',
+        {
+          workspaceRoot: "/workspace",
+          skills: [{ name: "show-me", displayName: "Show Me" }],
+        },
+      ),
+    ).toBe("Use Show Me and a.ts.");
+    expect(
+      threadFindVisibleText(
+        "assistant",
+        '<a href="src/index.ts">first</a> <a href="test/index.ts">second</a>',
+      ),
+    ).toBe("index.ts index.ts");
+  });
+
   it("keeps raw HTML literal in user messages", () => {
     expect(threadFindVisibleText("user", "<Widget>hello</Widget>")).toBe("<Widget>hello</Widget>");
   });
@@ -44,6 +66,9 @@ describe("threadFindVisibleText", () => {
     expect(
       threadFindVisibleText("assistant", "[first](src/alpha/main.ts) [second](src/beta/main.ts)"),
     ).toBe("main.ts · src/alpha main.ts · src/beta");
+    expect(threadFindVisibleText("assistant", "[source](src/index.ts) and `test/index.ts`")).toBe(
+      "index.ts · src and index.ts · test",
+    );
   });
 
   it("projects Codex directives and GitHub alerts like the transcript", () => {
@@ -59,12 +84,49 @@ describe("threadFindVisibleText", () => {
     );
   });
 
+  it("projects assistant citations, known skill chips, and empty responses like the transcript", () => {
+    const citation = serializeAssistantCitation({
+      version: 1,
+      environmentId: EnvironmentId.make("environment"),
+      threadId: ThreadId.make("thread"),
+      messageId: MessageId.make("message"),
+      text: "Original quote",
+      comment: "Please revise this quote",
+      start: 0,
+      end: 14,
+      prefix: "",
+      suffix: "",
+    });
+
+    expect(threadFindVisibleText("user", `Review ${citation}.`)).toBe(
+      "Review Please revise this quote.",
+    );
+    expect(
+      threadFindVisibleText("user", "Use $show-me but keep `$show-me` literal.", {
+        skills: [{ name: "show-me", displayName: "Show Me" }],
+      }),
+    ).toBe("Use Show Me but keep $show-me literal.");
+    expect(threadFindVisibleText("assistant", "")).toBe("(empty response)");
+    expect(threadFindVisibleText("assistant", "", { streaming: true })).toBe("");
+  });
+
+  it("projects skill chips only where the transcript renders them", () => {
+    const options = { skills: [{ name: "show-me", displayName: "Show Me" }] } as const;
+
+    expect(
+      threadFindVisibleText("assistant", "# $show-me\n\n| Tool |\n| --- |\n| $show-me |", options),
+    ).toBe("$show-me Tool $show-me");
+    expect(
+      threadFindVisibleText("assistant", "Paragraph $show-me\n\n-       list $show-me", options),
+    ).toBe("Paragraph Show Me list Show Me");
+  });
+
   it("includes the visible metadata and body of review-comment cards", () => {
     const prompt = [
       "Before",
       '<review_comment sectionId="turn:2" sectionTitle="Turn 2" filePath="/workspace/src/app.ts" startIndex="3" endIndex="4" rangeLabel="+47 to +48">',
       "Please fix *this*.",
-      "```diff",
+      "```Diff",
       "-old",
       "+new",
       "```",
@@ -73,7 +135,7 @@ describe("threadFindVisibleText", () => {
     ].join("\n");
 
     expect(threadFindVisibleText("user", prompt, { workspaceRoot: "/workspace" })).toBe(
-      "Before workspace/src/app.ts Turn 2 · +47 to +48 Please fix *this*. -old +new After",
+      "Before workspace/src/app.ts Turn 2 · +47 to +48 Please fix *this*. old new After",
     );
   });
 
@@ -137,6 +199,60 @@ describe("threadFindVisibleText", () => {
     expect(threadFindVisibleText("user", prompt)).toBe(
       "Tighten spacing 1 selected element. 2 <Card> (Card.tsx:4) Body text",
     );
+  });
+
+  it("keeps synthesized context-card text literal", () => {
+    const prompt = [
+      "Body text",
+      "",
+      "<preview_annotation>",
+      "Preview annotation:",
+      "Id: preview-1",
+      "Page: Dashboard",
+      "Comment: Use **$show-me** exactly",
+      "Targets: [one](target) selected element.",
+      "</preview_annotation>",
+    ].join("\n");
+
+    expect(
+      threadFindVisibleText("user", prompt, {
+        skills: [{ name: "show-me", displayName: "Show Me" }],
+      }),
+    ).toBe("Use **$show-me** exactly [one](target) selected element. Body text");
+  });
+});
+
+describe("reviewDiffVisibleText", () => {
+  it("projects only the code column rendered for unified hunks", () => {
+    expect(
+      reviewDiffVisibleText(
+        [
+          "diff --git a/src/app.ts b/src/app.ts",
+          "index 123..456 100644",
+          "--- a/src/app.ts",
+          "+++ b/src/app.ts",
+          "@@ -1,2 +1,2 @@",
+          "-old value",
+          "+new value",
+          " context",
+          "\\ No newline at end of file",
+        ].join("\n"),
+      ),
+    ).toBe("old value\nnew value\ncontext");
+  });
+
+  it("keeps code lines that resemble patch metadata inside a hunk", () => {
+    expect(
+      reviewDiffVisibleText(
+        [
+          "--- a/query.sql",
+          "+++ b/query.sql",
+          "@@ -1,2 +1,2 @@",
+          "--- deleted SQL comment",
+          "+++ added content",
+        ].join("\n"),
+      ),
+    ).toBe("-- deleted SQL comment\n++ added content");
   });
 });
 

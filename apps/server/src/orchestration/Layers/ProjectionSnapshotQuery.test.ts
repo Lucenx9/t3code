@@ -11,6 +11,7 @@ import { assert, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
@@ -476,6 +477,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
             updatedAt: "2026-02-24T00:00:07.000Z",
           },
           latestUserMessageAt: "2026-02-24T00:00:04.000Z",
+          searchableMessagesRevision: 0,
           hasPendingApprovals: true,
           hasPendingUserInput: false,
           hasActionableProposedPlan: false,
@@ -1837,9 +1839,9 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           (
             'message-user',
             'thread-active',
-            'turn-active',
+            NULL,
             'user',
-            'Please find this USER needle in an old prompt.',
+            'Please find this USER needle in an old prompt. Use $show-me for the result.',
             0,
             '2026-05-01T00:00:12.000Z',
             '2026-05-01T00:00:12.000Z'
@@ -1903,6 +1905,26 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
             0,
             '2026-05-01T00:00:15.500Z',
             '2026-05-01T00:00:15.500Z'
+          ),
+          (
+            'message-skill-costarring',
+            'thread-active',
+            NULL,
+            'user',
+            'Use $costarring for this task.',
+            0,
+            '2026-05-01T00:00:15.600Z',
+            '2026-05-01T00:00:15.600Z'
+          ),
+          (
+            'message-skill-liquid',
+            'thread-active',
+            NULL,
+            'user',
+            'Use $liquid for this task.',
+            0,
+            '2026-05-01T00:00:15.700Z',
+            '2026-05-01T00:00:15.700Z'
           ),
           (
             'message-hidden',
@@ -1972,6 +1994,13 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         (yield* snapshotQuery.searchThreads({ query: "hidden needle" })).matches,
         [],
       );
+      yield* sql`
+        UPDATE projection_thread_messages
+        SET
+          is_streaming = 1,
+          updated_at = '2026-05-01T00:00:17.000Z'
+        WHERE message_id = 'message-final'
+      `;
       assert.equal(
         (yield* snapshotQuery.findThread({
           threadId: ThreadId.make("thread-hidden"),
@@ -1992,16 +2021,39 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         query: "needle",
         limit: 1,
       });
+      const activeTurnTargetCursor = encodeThreadDetailPageCursor({
+        threadId: ThreadId.make("thread-active"),
+        beforeAnchorAt: "2026-05-01T00:00:12.000Z",
+        beforeTurnId: "turn-active",
+        includeBoundary: true,
+        targetAnchorAt: "2026-05-01T00:00:12.000Z",
+      });
       assert.equal(firstThreadMatch.total, 2);
       assert.equal(firstThreadMatch.startIndex, 0);
       assert.deepStrictEqual(firstThreadMatch.matches, [
         {
           messageId: MessageId.make("message-user"),
-          turnId: TurnId.make("turn-active"),
+          turnId: null,
           source: "user",
           occurrenceIndex: 0,
+          targetCursor: activeTurnTargetCursor,
         },
       ]);
+      const targetWindow = yield* snapshotQuery.getThreadDetailSnapshot(
+        ThreadId.make("thread-active"),
+        { turnLimit: 1, beforeCursor: activeTurnTargetCursor },
+      );
+      assert.isTrue(
+        Option.getOrThrow(targetWindow).thread.messages.some(
+          (message) => message.id === MessageId.make("message-user"),
+        ),
+      );
+
+      yield* sql`
+        UPDATE projection_threads
+        SET updated_at = '2026-05-01T00:00:18.000Z'
+        WHERE thread_id = 'thread-active'
+      `;
 
       const secondThreadMatch = yield* snapshotQuery.findThread({
         threadId: ThreadId.make("thread-active"),
@@ -2010,22 +2062,63 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         limit: 1,
       });
       assert.equal(secondThreadMatch.total, 2);
+      assert.equal(secondThreadMatch.revision, firstThreadMatch.revision);
       assert.deepStrictEqual(secondThreadMatch.matches, [
         {
           messageId: MessageId.make("message-final"),
           turnId: TurnId.make("turn-active"),
           source: "assistant",
           occurrenceIndex: 0,
+          targetCursor: activeTurnTargetCursor,
         },
       ]);
+      assert.equal(
+        (yield* snapshotQuery.findThread({
+          threadId: ThreadId.make("thread-active"),
+          query: "Show Me",
+          skills: [{ name: "show-me", displayName: "Show Me" }],
+        })).total,
+        1,
+      );
+      assert.equal(
+        (yield* snapshotQuery.findThread({
+          threadId: ThreadId.make("thread-active"),
+          query: "$show-me",
+          skills: [{ name: "show-me", displayName: "Show Me" }],
+        })).total,
+        0,
+      );
+      const collidingSkillLabel = "Shared skill label";
+      const costarringResult = yield* snapshotQuery.findThread({
+        threadId: ThreadId.make("thread-active"),
+        query: collidingSkillLabel,
+        skills: [{ name: "costarring", displayName: collidingSkillLabel }],
+      });
+      const liquidResult = yield* snapshotQuery.findThread({
+        threadId: ThreadId.make("thread-active"),
+        query: collidingSkillLabel,
+        skills: [{ name: "liquid", displayName: collidingSkillLabel }],
+      });
+      assert.equal(costarringResult.revision, liquidResult.revision);
+      assert.equal(
+        costarringResult.matches[0]?.messageId,
+        MessageId.make("message-skill-costarring"),
+      );
+      assert.equal(liquidResult.matches[0]?.messageId, MessageId.make("message-skill-liquid"));
 
       const repeatedNeedles = Array.from({ length: 120 }, () => "needle").join(" ");
       yield* sql`
         UPDATE projection_thread_messages
         SET
           text = ${repeatedNeedles},
+          is_streaming = 0,
           updated_at = '2026-05-01T00:00:19.000Z'
         WHERE message_id = 'message-final'
+      `;
+      yield* sql`
+        UPDATE projection_threads
+        SET searchable_messages_revision = searchable_messages_revision + 1
+        WHERE thread_id = 'thread-active'
       `;
       const boundedThreadMatches = yield* snapshotQuery.findThread({
         threadId: ThreadId.make("thread-active"),
@@ -2038,7 +2131,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       const lastThreadMatch = yield* snapshotQuery.findThread({
         threadId: ThreadId.make("thread-active"),
         query: "needle",
-        startIndex: 120,
+        startIndex: Number.MAX_SAFE_INTEGER,
       });
       assert.equal(lastThreadMatch.startIndex, 120);
       assert.deepStrictEqual(lastThreadMatch.matches, [
@@ -2047,6 +2140,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           turnId: TurnId.make("turn-active"),
           source: "assistant",
           occurrenceIndex: 119,
+          targetCursor: activeTurnTargetCursor,
         },
       ]);
       assert.equal(
@@ -2334,6 +2428,92 @@ projectionSnapshotLayer("ProjectionSnapshotQuery windowed thread detail", (it) =
         assert.notEqual(snapshot.value.page?.beforeCursor, null);
         assert.equal(snapshot.value.page?.snapshotSequence, 42);
       }
+    }),
+  );
+
+  it.effect("loads a turnless find target before the first turn without widening history", () =>
+    Effect.gen(function* () {
+      yield* seedFanOutThread();
+      const sql = yield* SqlClient.SqlClient;
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      yield* sql`
+        INSERT INTO projection_thread_messages (
+          message_id, thread_id, turn_id, role, text, is_streaming, created_at, updated_at
+        )
+        VALUES ('user-msg-before-turns', 'thread-w', NULL, 'user', 'orphan target phrase',
+          0, '2026-02-28T23:59:00.000Z', '2026-02-28T23:59:00.000Z')
+      `;
+
+      const result = yield* snapshotQuery.findThread({
+        threadId: threadW,
+        query: "orphan target phrase",
+      });
+      assert.equal(result.total, 1);
+      const cursor = result.matches[0]?.targetCursor;
+      if (cursor === undefined) assert.fail("expected a direct target cursor");
+
+      const snapshot = yield* snapshotQuery.getThreadDetailSnapshot(threadW, {
+        turnLimit: 2,
+        beforeCursor: cursor,
+      });
+      assert.deepEqual(messageIds(Option.getOrThrow(snapshot)), ["user-msg-before-turns"]);
+    }),
+  );
+
+  it.effect("loads a direct target when more than 150 turns share its timestamp", () =>
+    Effect.gen(function* () {
+      yield* seedFanOutThread();
+      const sql = yield* SqlClient.SqlClient;
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      yield* sql`
+        WITH RECURSIVE ids(n) AS (
+          VALUES (0)
+          UNION ALL
+          SELECT n + 1 FROM ids WHERE n < 150
+        )
+        INSERT INTO projection_turns (
+          thread_id, turn_id, pending_message_id, assistant_message_id, state,
+          requested_at, started_at, completed_at, checkpoint_files_json
+        )
+        SELECT
+          'thread-w',
+          CASE WHEN n = 0 THEN 'prefix-target' ELSE printf('prefix-target%03d', n) END,
+          NULL,
+          CASE WHEN n = 0 THEN 'same-target-message' ELSE NULL END,
+          'completed',
+          '2026-03-01T00:05:00.000Z',
+          '2026-03-01T00:05:00.000Z',
+          '2026-03-01T00:05:00.000Z',
+          '[]'
+        FROM ids
+      `;
+      yield* sql`
+        INSERT INTO projection_thread_messages (
+          message_id, thread_id, turn_id, role, text, is_streaming, created_at, updated_at
+        )
+        VALUES (
+          'same-target-message', 'thread-w', 'prefix-target', 'assistant', 'crowded target phrase',
+          0, '2026-03-01T00:05:00.000Z', '2026-03-01T00:05:00.000Z'
+        )
+      `;
+      yield* sql`
+        UPDATE projection_threads
+        SET searchable_messages_revision = 50151
+        WHERE thread_id = 'thread-w'
+      `;
+
+      const result = yield* snapshotQuery.findThread({
+        threadId: threadW,
+        query: "crowded target phrase",
+      });
+      const cursor = result.matches[0]?.targetCursor;
+      if (cursor === undefined) assert.fail("expected a direct target cursor");
+
+      const snapshot = yield* snapshotQuery.getThreadDetailSnapshot(threadW, {
+        turnLimit: 2,
+        beforeCursor: cursor,
+      });
+      assert.include(messageIds(Option.getOrThrow(snapshot)), "same-target-message");
     }),
   );
 

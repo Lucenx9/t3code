@@ -278,7 +278,7 @@ import { terminalEnvironment } from "../state/terminal";
 import { threadEnvironment, useEnvironmentThread } from "../state/threads";
 import {
   requestOlderThreadTurns,
-  threadHasOlderTurns,
+  requestThreadTurnsAround,
 } from "@t3tools/client-runtime/state/threads";
 import { resolveProviderSkillsForCwd } from "@t3tools/client-runtime/providerSkills";
 import { vcsEnvironment } from "../state/vcs";
@@ -298,6 +298,7 @@ import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
 import { MessagesTimeline } from "./chat/MessagesTimeline";
 import { ThreadFindBar } from "./chat/ThreadFindBar";
+import { presentThreadFindSkills } from "./chat/ThreadFindBar.logic";
 import type { ThreadFindRequest } from "./chat/ThreadFindSource";
 import type { AssistantCitationRequest } from "./chat/AssistantCitationSource";
 import { resolveTimelineIsAtEnd } from "./chat/MessagesTimeline.logic";
@@ -1354,6 +1355,17 @@ function releaseChatTimelineAnchor<T extends { readonly messageId: MessageId | n
   return current.messageId === null ? current : { ...current, messageId: null };
 }
 
+type ThreadFindSession = {
+  readonly ownerKey: string;
+  readonly open: boolean;
+  readonly focusRequestId: number;
+  readonly request: ThreadFindRequest | null;
+};
+
+function emptyThreadFindSession(ownerKey: string): ThreadFindSession {
+  return { ownerKey, open: false, focusRequestId: 0, request: null };
+}
+
 function ChatViewContent(props: ChatViewProps) {
   const {
     environmentId,
@@ -1440,22 +1452,30 @@ function ChatViewContent(props: ChatViewProps) {
     [routeServerThreadShell, threadDetailLoading],
   );
   const activeServerThread = serverThread ?? loadingServerThread;
-  // Pagination window state for the routed server thread: drives the
-  // "load earlier turns" header when the loaded window has older history.
+  // Pagination window state for the routed server thread. Direct target
+  // windows remain available even after adjacent history is exhausted.
   const routeThreadState = useEnvironmentThread(
     routeKind === "server" ? routeThreadRef.environmentId : null,
     routeKind === "server" ? routeThreadRef.threadId : null,
   );
   const loadEarlierTurns = useMemo(() => {
-    if (routeKind !== "server" || !threadHasOlderTurns(routeThreadState)) {
+    if (routeKind !== "server" || routeThreadState.page._tag !== "Some") {
       return null;
     }
+    const page = routeThreadState.page.value;
     return {
-      loading: routeThreadState.page._tag === "Some" && routeThreadState.page.value.loadingOlder,
-      cursor:
-        routeThreadState.page._tag === "Some" ? routeThreadState.page.value.beforeCursor : null,
+      loading: page.loadingOlder,
+      cursor: page.beforeCursor,
+      hasMore: page.hasMore,
       onLoadEarlier: () => {
         requestOlderThreadTurns(routeThreadRef.environmentId, routeThreadRef.threadId);
+      },
+      onLoadWindow: (beforeCursor: string) => {
+        requestThreadTurnsAround(
+          routeThreadRef.environmentId,
+          routeThreadRef.threadId,
+          beforeCursor,
+        );
       },
     };
   }, [routeKind, routeThreadRef, routeThreadState]);
@@ -2048,28 +2068,42 @@ function ChatViewContent(props: ChatViewProps) {
   const activeEnvironment =
     activeThread == null ? null : (environmentById.get(activeThread.environmentId) ?? null);
   const supportsThreadFind = isServerThread && activeEnvironment?.serverConfig?.threadFind === 1;
-  const [threadFindOpen, setThreadFindOpen] = useState(false);
-  const [threadFindFocusRequestId, setThreadFindFocusRequestId] = useState(0);
-  const [threadFindRequest, setThreadFindRequest] = useState<ThreadFindRequest | null>(null);
+  const [threadFindSession, setThreadFindSession] = useState(() =>
+    emptyThreadFindSession(routeThreadKey),
+  );
+  if (threadFindSession.ownerKey !== routeThreadKey) {
+    setThreadFindSession(emptyThreadFindSession(routeThreadKey));
+  }
+  const hasActiveThreadFindSession =
+    supportsThreadFind && threadFindSession.ownerKey === routeThreadKey;
+  const threadFindOpen = hasActiveThreadFindSession && threadFindSession.open;
+  const threadFindFocusRequestId = hasActiveThreadFindSession
+    ? threadFindSession.focusRequestId
+    : 0;
+  const threadFindRequest = hasActiveThreadFindSession ? threadFindSession.request : null;
   const openThreadFindBar = useCallback(() => {
     if (!supportsThreadFind) return;
-    setThreadFindOpen(true);
-    setThreadFindFocusRequestId((value) => value + 1);
-  }, [supportsThreadFind]);
+    setThreadFindSession((current) => ({
+      ownerKey: routeThreadKey,
+      open: true,
+      focusRequestId: current.ownerKey === routeThreadKey ? current.focusRequestId + 1 : 1,
+      request: current.ownerKey === routeThreadKey ? current.request : null,
+    }));
+  }, [routeThreadKey, supportsThreadFind]);
   const closeThreadFindBar = useCallback(() => {
-    setThreadFindOpen(false);
-    setThreadFindRequest(null);
-  }, []);
-  useEffect(() => onOpenThreadFind(openThreadFindBar), [openThreadFindBar]);
-  useEffect(() => {
-    if (supportsThreadFind) return;
-    setThreadFindOpen(false);
-    setThreadFindRequest(null);
-  }, [supportsThreadFind]);
-  useEffect(() => {
-    setThreadFindOpen(false);
-    setThreadFindRequest(null);
+    setThreadFindSession((current) =>
+      current.ownerKey === routeThreadKey ? { ...current, open: false, request: null } : current,
+    );
   }, [routeThreadKey]);
+  const handleThreadFindRequest = useCallback(
+    (request: ThreadFindRequest | null) => {
+      setThreadFindSession((current) =>
+        current.ownerKey === routeThreadKey ? { ...current, request } : current,
+      );
+    },
+    [routeThreadKey],
+  );
+  useEffect(() => onOpenThreadFind(openThreadFindBar), [openThreadFindBar]);
   const activeEnvironmentConnectionPhase = activeEnvironment?.connection.phase ?? "available";
   const activeEnvironmentUnavailable =
     activeEnvironment !== null && activeEnvironmentConnectionPhase !== "connected";
@@ -2814,6 +2848,25 @@ function ChatViewContent(props: ChatViewProps) {
       };
     });
   }, [serverAttachmentUrlById, serverMessages]);
+  const threadFindMessageRevision = useMemo(() => {
+    const workspaceRoot = activeThread?.worktreePath ?? activeProject?.workspaceRoot ?? "";
+    if (routeServerThreadShell?.searchableMessagesRevision !== undefined) {
+      return `${routeServerThreadShell.searchableMessagesRevision}\0${workspaceRoot}`;
+    }
+    let message: ChatMessage | undefined;
+    for (const candidate of displayServerMessages) {
+      if (!message || candidate.updatedAt >= message.updatedAt) message = candidate;
+    }
+    const messageRevision = message
+      ? `${message.id}\0${message.updatedAt}\0${message.streaming ? 1 : 0}\0${message.text.length}`
+      : "";
+    return `${messageRevision}\0${workspaceRoot}`;
+  }, [
+    activeProject?.workspaceRoot,
+    activeThread?.worktreePath,
+    displayServerMessages,
+    routeServerThreadShell?.searchableMessagesRevision,
+  ]);
   useEffect(() => {
     if (typeof Image === "undefined" || displayServerMessages.length === 0) {
       return;
@@ -3015,6 +3068,17 @@ function ChatViewContent(props: ChatViewProps) {
         worktreePath: activeThread?.worktreePath ?? null,
       })
     : null;
+  const activeProviderSkills = useMemo(
+    () =>
+      activeProviderStatus
+        ? resolveProviderSkillsForCwd(activeProviderStatus, gitCwd)
+        : EMPTY_PROVIDER_SKILLS,
+    [activeProviderStatus, gitCwd],
+  );
+  const presentedThreadSkills = useMemo(
+    () => presentThreadFindSkills(activeProviderSkills),
+    [activeProviderSkills],
+  );
   const gitStatusCwd = activeThread?.worktreePath ?? gitCwd;
   const gitStatusQuery = useEnvironmentQuery(
     gitStatusCwd === null
@@ -7819,7 +7883,7 @@ function ChatViewContent(props: ChatViewProps) {
                 onCiteAssistantText={citeAssistantText}
                 agentPanelModel={agentPanelModel}
                 onOpenAgents={addAgentsSurface}
-                key={activeThread.id}
+                key={`timeline:${routeThreadKey}`}
                 isWorking={isWorking}
                 isPreparingWorktree={isPreparingWorktree}
                 isCompacting={isCompacting}
@@ -7843,11 +7907,7 @@ function ChatViewContent(props: ChatViewProps) {
                 resolvedTheme={resolvedTheme}
                 timestampFormat={timestampFormat}
                 workspaceRoot={activeWorkspaceRoot}
-                skills={
-                  activeProviderStatus
-                    ? resolveProviderSkillsForCwd(activeProviderStatus, gitCwd)
-                    : EMPTY_PROVIDER_SKILLS
-                }
+                skills={presentedThreadSkills}
                 anchorMessageId={timelineAnchorMessageId}
                 onAnchorReady={onTimelineAnchorReady}
                 contentInsetEndAdjustment={composerTimelineInset}
@@ -7861,10 +7921,13 @@ function ChatViewContent(props: ChatViewProps) {
 
               {threadFindOpen && supportsThreadFind ? (
                 <ThreadFindBar
+                  key={`find:${routeThreadKey}`}
                   environmentId={activeThread.environmentId}
                   threadId={activeThread.id}
+                  skills={presentedThreadSkills}
+                  messageRevision={threadFindMessageRevision}
                   focusRequestId={threadFindFocusRequestId}
-                  onRequest={setThreadFindRequest}
+                  onRequest={handleThreadFindRequest}
                   onClose={closeThreadFindBar}
                 />
               ) : null}

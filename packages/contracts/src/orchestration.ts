@@ -590,6 +590,8 @@ export const OrchestrationThreadShell = Schema.Struct({
   titleRegeneration: Schema.optional(Schema.NullOr(ThreadTitleRegeneration)),
   session: Schema.NullOr(OrchestrationSession),
   latestUserMessageAt: Schema.NullOr(IsoDateTime),
+  // Optional so cached shell snapshots from servers predating conversation find still decode.
+  searchableMessagesRevision: Schema.optional(NonNegativeInt),
   hasPendingApprovals: Schema.Boolean,
   hasPendingUserInput: Schema.Boolean,
   hasActionableProposedPlan: Schema.Boolean,
@@ -1766,13 +1768,29 @@ export const OrchestrationSearchThreadsResult = Schema.Struct({
 export type OrchestrationSearchThreadsResult = typeof OrchestrationSearchThreadsResult.Type;
 
 export const THREAD_FIND_RESULT_LIMIT = 100;
+export const THREAD_FIND_QUERY_MAX_LENGTH = 200;
+export const THREAD_FIND_SKILL_LIMIT = 500;
+export const THREAD_FIND_SKILL_TEXT_MAX_LENGTH = 200;
+
+const OrchestrationThreadFindSkill = Schema.Struct({
+  name: TrimmedNonEmptyString.check(Schema.isMaxLength(THREAD_FIND_SKILL_TEXT_MAX_LENGTH)),
+  displayName: Schema.optionalKey(
+    TrimmedNonEmptyString.check(Schema.isMaxLength(THREAD_FIND_SKILL_TEXT_MAX_LENGTH)),
+  ),
+});
 
 export const OrchestrationFindThreadInput = Schema.Struct({
   threadId: ThreadId,
-  query: TrimmedString.check(Schema.isMinLength(1), Schema.isMaxLength(200)),
+  query: TrimmedString.check(
+    Schema.isMinLength(1),
+    Schema.isMaxLength(THREAD_FIND_QUERY_MAX_LENGTH),
+  ),
   startIndex: Schema.optionalKey(NonNegativeInt),
   limit: Schema.optionalKey(
     Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: THREAD_FIND_RESULT_LIMIT })),
+  ),
+  skills: Schema.optionalKey(
+    Schema.Array(OrchestrationThreadFindSkill).check(Schema.isMaxLength(THREAD_FIND_SKILL_LIMIT)),
   ),
 });
 export type OrchestrationFindThreadInput = typeof OrchestrationFindThreadInput.Type;
@@ -1782,6 +1800,8 @@ export const OrchestrationThreadFindMatch = Schema.Struct({
   turnId: Schema.NullOr(TurnId),
   source: OrchestrationThreadSearchSource,
   occurrenceIndex: NonNegativeInt,
+  /** Opaque page boundary that lets clients fetch the containing history window directly. */
+  targetCursor: TrimmedNonEmptyString,
 });
 export type OrchestrationThreadFindMatch = typeof OrchestrationThreadFindMatch.Type;
 

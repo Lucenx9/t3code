@@ -1,5 +1,5 @@
 import { ASSISTANT_CITATION_CONTEXT_LENGTH, type AssistantCitation } from "@t3tools/contracts";
-import { findThreadFindOccurrence } from "@t3tools/shared/threadFind";
+import { findThreadFindOccurrence } from "@t3tools/shared/threadFindMatch";
 
 export type AssistantTextSelector = {
   readonly text: string;
@@ -35,7 +35,10 @@ export function findAssistantCitationSourceAnchor(
 }
 
 const CONTROL_SELECTOR = "button, input, textarea, select, [role=button], [contenteditable]";
-const EXCLUDED_SELECTOR = `${CONTROL_SELECTOR}, [data-thread-find-exclude], [hidden], [aria-hidden=true], script, style, template, noscript, svg`;
+const NON_CONTROL_EXCLUDED_SELECTOR =
+  "[data-thread-find-exclude], [data-separator], [data-no-newline], [hidden], [aria-hidden=true], script, style, template, noscript, svg";
+const THREAD_FIND_INCLUDED_CONTROL_SELECTOR =
+  "[data-markdown-details-summary], [data-assistant-citation-chip]";
 const BLOCK_SELECTOR =
   "address, article, aside, blockquote, dd, div, dl, dt, figcaption, figure, footer, h1, h2, h3, h4, h5, h6, header, hr, li, main, nav, ol, p, pre, section, table, td, th, tr, ul";
 
@@ -138,7 +141,10 @@ type TextChunk = { node: Text; start: number; end: number };
  * reads, CSS-generated content, or soft-wrap line breaks enter the stream, so
  * reflow cannot move it.
  */
-export function readVisibleText(root: HTMLElement) {
+export function readVisibleText(
+  root: HTMLElement,
+  options: { readonly includeThreadFindSummaryControls?: boolean } = {},
+) {
   const parts: string[] = [];
   const chunks: TextChunk[] = [];
   let length = 0;
@@ -160,7 +166,25 @@ export function readVisibleText(root: HTMLElement) {
     }
     if (node.nodeType !== 1) return;
     const element = node as Element;
-    if (element.matches(EXCLUDED_SELECTOR)) return;
+    if (element.matches(NON_CONTROL_EXCLUDED_SELECTOR)) return;
+    if (element.tagName === "DIFFS-CONTAINER") {
+      const content = (element as HTMLElement).shadowRoot?.querySelector("[data-content]");
+      if (content) {
+        separator = true;
+        for (const child of content.childNodes) visit(child);
+        separator = true;
+      }
+      return;
+    }
+    if (
+      element.matches(CONTROL_SELECTOR) &&
+      !(
+        options.includeThreadFindSummaryControls &&
+        element.matches(THREAD_FIND_INCLUDED_CONTROL_SELECTOR)
+      )
+    ) {
+      return;
+    }
     const block = element.matches(BLOCK_SELECTOR);
     if (block || element.tagName === "BR") separator = true;
     for (const child of element.childNodes) visit(child);
@@ -171,18 +195,44 @@ export function readVisibleText(root: HTMLElement) {
   return { text: parts.join(""), chunks };
 }
 
-function excludedAncestor(node: Node): Element | null {
-  const element = node.nodeType === 1 ? (node as Element) : node.parentElement;
-  return element?.closest(EXCLUDED_SELECTOR) ?? null;
+function composedContains(root: HTMLElement, node: Node): boolean {
+  if (root.contains(node)) return true;
+  let current: Node | null = node;
+  while (current && typeof current.getRootNode === "function") {
+    const treeRoot = current.getRootNode() as Node & { readonly host?: Element };
+    const host = treeRoot.host;
+    if (!host) return false;
+    if (root.contains(host)) return true;
+    current = host;
+  }
+  return false;
 }
 
-function isUsableRange(root: HTMLElement, range: Range): boolean {
+function excludedAncestor(
+  node: Node,
+  options: { readonly includeThreadFindSummaryControls?: boolean } = {},
+): Element | null {
+  const element = node.nodeType === 1 ? (node as Element) : node.parentElement;
+  const nonControl = element?.closest(NON_CONTROL_EXCLUDED_SELECTOR) ?? null;
+  if (nonControl !== null) return nonControl;
+  const control = element?.closest(CONTROL_SELECTOR) ?? null;
+  return options.includeThreadFindSummaryControls &&
+    control?.matches(THREAD_FIND_INCLUDED_CONTROL_SELECTOR)
+    ? null
+    : control;
+}
+
+function isUsableRange(
+  root: HTMLElement,
+  range: Range,
+  options: { readonly includeThreadFindSummaryControls?: boolean } = {},
+): boolean {
   if (
     range.collapsed ||
-    !root.contains(range.startContainer) ||
-    !root.contains(range.endContainer) ||
-    excludedAncestor(range.startContainer) !== null ||
-    excludedAncestor(range.endContainer) !== null
+    !composedContains(root, range.startContainer) ||
+    !composedContains(root, range.endContainer) ||
+    excludedAncestor(range.startContainer, options) !== null ||
+    excludedAncestor(range.endContainer, options) !== null
   ) {
     return false;
   }
@@ -282,25 +332,42 @@ export function resolveAssistantCitationRange(
   return isUsableRange(root, range) ? range : null;
 }
 
-/** Resolve one case-insensitive find occurrence in the rendered text stream. */
-export function resolveThreadFindRange(
+/** Resolve one case-insensitive find occurrence into ranges that never cross tree roots. */
+export function resolveThreadFindRanges(
   root: HTMLElement,
   query: string,
   occurrenceIndex: number,
-): Range | null {
-  if (excludedAncestor(root) !== null) return null;
-  const stream = readVisibleText(root);
+): ReadonlyArray<Range> | null {
+  const options = { includeThreadFindSummaryControls: true } as const;
+  if (excludedAncestor(root, options) !== null) return null;
+  const stream = readVisibleText(root, options);
   const match = findThreadFindOccurrence(normalizeWhitespace(stream.text), query, occurrenceIndex);
   if (match === null) return null;
 
   const start = rawTextOffset(stream.text, match.start);
   const end = rawTextOffset(stream.text, match.end);
-  const first = stream.chunks.find((chunk) => chunk.end > start);
-  const last = stream.chunks.findLast((chunk) => chunk.start < end);
-  if (first === undefined || last === undefined) return null;
+  const groups: Array<{
+    readonly treeRoot: Node;
+    readonly first: TextChunk;
+    last: TextChunk;
+  }> = [];
+  for (const chunk of stream.chunks) {
+    if (chunk.end <= start || chunk.start >= end) continue;
+    const treeRoot = chunk.node.getRootNode();
+    const previous = groups.at(-1);
+    if (previous?.treeRoot === treeRoot) {
+      previous.last = chunk;
+    } else {
+      groups.push({ treeRoot, first: chunk, last: chunk });
+    }
+  }
 
-  const range = root.ownerDocument.createRange();
-  range.setStart(first.node, Math.max(0, start - first.start));
-  range.setEnd(last.node, Math.min(last.node.length, end - last.start));
-  return isUsableRange(root, range) ? range : null;
+  const ranges: Range[] = [];
+  for (const group of groups) {
+    const range = root.ownerDocument.createRange();
+    range.setStart(group.first.node, Math.max(0, start - group.first.start));
+    range.setEnd(group.last.node, Math.min(group.last.node.length, end - group.last.start));
+    if (isUsableRange(root, range, options)) ranges.push(range);
+  }
+  return ranges.length > 0 ? ranges : null;
 }

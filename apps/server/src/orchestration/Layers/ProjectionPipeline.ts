@@ -104,6 +104,8 @@ interface ProjectorDefinition {
 interface AttachmentSideEffects {
   readonly deletedThreadIds: Set<string>;
   readonly prunedThreadRelativePaths: Map<string, Set<string>>;
+  /** Null when one projector is replaying without the coordinated projector transaction. */
+  readonly canonicalAssistantChangedThreadIds: Set<ThreadId> | null;
 }
 
 const materializeAttachmentsForProjection = Effect.fn("materializeAttachmentsForProjection")(
@@ -651,6 +653,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             titleRegenerationRequestId: null,
             titleRegenerationStartedAt: null,
             latestUserMessageAt: null,
+            searchableMessagesRevision: 0,
             pendingApprovalCount: 0,
             pendingUserInputCount: 0,
             hasActionableProposedPlan: 0,
@@ -913,6 +916,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
             updatedAt: event.occurredAt,
+            searchableMessagesRevision:
+              (existingRow.value.searchableMessagesRevision ?? 0) +
+              (event.payload.role === "system" ? 0 : 1),
             latestUserMessageAt:
               event.payload.role === "user" &&
               (previousLatest === null || event.payload.createdAt > previousLatest)
@@ -966,10 +972,16 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           if (Option.isNone(existingRow)) {
             return;
           }
+          const canonicalAssistantChanged =
+            attachmentSideEffects.canonicalAssistantChangedThreadIds?.has(event.payload.threadId) ??
+            true;
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
             latestTurnId: event.payload.turnId,
             updatedAt: event.occurredAt,
+            searchableMessagesRevision:
+              (existingRow.value.searchableMessagesRevision ?? 0) +
+              (canonicalAssistantChanged ? 1 : 0),
           });
           yield* refreshThreadShellSummary(event.payload.threadId);
           return;
@@ -1008,6 +1020,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             ...existingRow.value,
             latestTurnId,
             updatedAt: event.occurredAt,
+            searchableMessagesRevision: (existingRow.value.searchableMessagesRevision ?? 0) + 1,
           });
           yield* refreshThreadShellSummary(event.payload.threadId);
           return;
@@ -1260,7 +1273,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
 
     const applyThreadTurnsProjection: ProjectorDefinition["apply"] = Effect.fn(
       "applyThreadTurnsProjection",
-    )(function* (event, _attachmentSideEffects) {
+    )(function* (event, attachmentSideEffects) {
       switch (event.type) {
         case "thread.created":
           yield* projectionTurnRepository.deleteByThreadId({
@@ -1574,6 +1587,13 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             threadId: event.payload.threadId,
             turnId: event.payload.turnId,
           });
+          const previousAssistantMessageId = Option.match(existingTurn, {
+            onNone: () => null,
+            onSome: (turn) => turn.assistantMessageId,
+          });
+          if (previousAssistantMessageId !== event.payload.assistantMessageId) {
+            attachmentSideEffects.canonicalAssistantChangedThreadIds?.add(event.payload.threadId);
+          }
           const nextState = event.payload.status === "error" ? "error" : "completed";
           yield* projectionTurnRepository.clearCheckpointTurnConflict({
             threadId: event.payload.threadId,
@@ -1853,7 +1873,11 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           );
         }
 
-        yield* runAttachmentSideEffects({ deletedThreadIds, prunedThreadRelativePaths });
+        yield* runAttachmentSideEffects({
+          deletedThreadIds,
+          prunedThreadRelativePaths,
+          canonicalAssistantChangedThreadIds: null,
+        });
       },
       Effect.provideService(FileSystem.FileSystem, fileSystem),
       Effect.provideService(Path.Path, path),
@@ -1890,6 +1914,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       const attachmentSideEffects: AttachmentSideEffects = {
         deletedThreadIds: new Set<string>(),
         prunedThreadRelativePaths: new Map<string, Set<string>>(),
+        canonicalAssistantChangedThreadIds: null,
       };
 
       yield* sql.withTransaction(applyProjectorForEvent(projector, event, attachmentSideEffects));
@@ -1919,6 +1944,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           const attachmentSideEffects: AttachmentSideEffects = {
             deletedThreadIds: new Set<string>(),
             prunedThreadRelativePaths: new Map<string, Set<string>>(),
+            canonicalAssistantChangedThreadIds: new Set<ThreadId>(),
           };
           yield* sql.withTransaction(
             Effect.forEach(

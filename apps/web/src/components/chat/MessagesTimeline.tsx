@@ -28,6 +28,7 @@ const NOOP_OPEN_ATTACHMENT = (_attachment: ChatFileAttachment) => {};
 import { resolveChatListAnchoredEndSpace } from "@t3tools/shared/chatList";
 import { toolActivityFaviconUrl } from "@t3tools/shared/favicon";
 import { getProjectFaviconCacheKey } from "@t3tools/shared/projectFavicon";
+import { reviewDiffVisibleText } from "@t3tools/shared/reviewDiffPresentation";
 import {
   createContext,
   Fragment,
@@ -182,6 +183,12 @@ import {
   parseReviewCommentMessageSegments,
   type ReviewCommentContext,
 } from "../../reviewCommentContext";
+
+const THREAD_FIND_DIFF_HIGHLIGHT_CSS = `
+::highlight(t3-thread-find) {
+  color: inherit;
+  background-color: color-mix(in oklab, var(--primary) 48%, transparent);
+}`;
 
 // ---------------------------------------------------------------------------
 // Context — shared state consumed by every row component via Context.
@@ -341,7 +348,7 @@ interface MessagesTimelineProps {
   onManualNavigation: () => void;
   hideEmptyPlaceholder?: boolean;
   topFadeEnabled?: boolean;
-  /** Non-null when older turns exist beyond the loaded window. */
+  /** Pagination controls and direct-window loading for the current thread. */
   loadEarlier?: CitationHistoryPage | null;
 }
 
@@ -801,7 +808,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
               topFadeEnabled && "topbar-scroll-fade",
             )}
             ListHeaderComponent={
-              loadEarlier !== null ? (
+              loadEarlier?.hasMore ? (
                 <TimelineLoadEarlierHeader
                   loading={loadEarlier.loading}
                   onLoadEarlier={loadEarlier.onLoadEarlier}
@@ -2574,7 +2581,7 @@ function UserMessageReviewCommentCard({ comment }: { comment: ReviewCommentConte
           <SkillInlineText text={comment.text} skills={ctx.skills} />
         </div>
       )}
-      {fenceLanguage !== "diff" && comment.diff.trim().length > 0 && (
+      {fenceLanguage.toLowerCase() !== "diff" && comment.diff.trim().length > 0 && (
         <ChatMarkdown
           text={formatReviewCommentFence(fenceLanguage, comment.diff)}
           cwd={ctx.markdownCwd}
@@ -2585,20 +2592,22 @@ function UserMessageReviewCommentCard({ comment }: { comment: ReviewCommentConte
       )}
       {renderablePatch?.kind === "files" &&
         renderablePatch.files.map((fileDiff) => (
-          <FileDiff
-            key={resolveFileDiffPath(fileDiff)}
-            fileDiff={fileDiff}
-            options={{
-              collapsed: false,
-              diffStyle: "unified",
-              theme: resolveDiffThemeName(ctx.resolvedTheme),
-              preferredHighlighter: PREFERRED_HIGHLIGHTER,
-            }}
-          />
+          <div key={resolveFileDiffPath(fileDiff)}>
+            <FileDiff
+              fileDiff={fileDiff}
+              options={{
+                collapsed: false,
+                diffStyle: "unified",
+                theme: resolveDiffThemeName(ctx.resolvedTheme),
+                preferredHighlighter: PREFERRED_HIGHLIGHTER,
+                unsafeCSS: THREAD_FIND_DIFF_HIGHLIGHT_CSS,
+              }}
+            />
+          </div>
         ))}
       {renderablePatch?.kind === "raw" && (
         <pre className="overflow-x-auto rounded-md bg-muted/40 p-2 text-xs">
-          {renderablePatch.text}
+          {reviewDiffVisibleText(comment.diff)}
         </pre>
       )}
     </div>

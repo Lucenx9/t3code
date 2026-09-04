@@ -636,7 +636,7 @@ export function buildDiffReviewComment(input: {
 }
 
 export function buildReviewCommentRenderablePatch(comment: ReviewCommentContext): string {
-  if ((comment.fenceLanguage ?? "diff") !== "diff") {
+  if ((comment.fenceLanguage ?? "diff").toLowerCase() !== "diff") {
     return "";
   }
   const diff = comment.diff.trim();

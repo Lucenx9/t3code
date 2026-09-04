@@ -1,9 +1,10 @@
 import type { ThreadId } from "@t3tools/contracts";
 
 /**
- * Opaque, exclusive cursor for windowed thread detail reads. Encodes the thread
- * id and the keyset boundary of an already-delivered page: the boundary turn's
- * anchor timestamp (`COALESCE(requested_at, started_at, '')`) and turn id.
+ * Opaque cursor for windowed thread detail reads. Encodes the thread id and the
+ * keyset boundary: the boundary turn's anchor timestamp
+ * (`COALESCE(requested_at, started_at, '')`) and turn key. Adjacent-page
+ * cursors are exclusive; direct-target cursors include their exact turn.
  * Passing it back requests the adjacent disjoint slice of strictly older turns
  * under `(anchor, turn_id)` ordering.
  *
@@ -20,13 +21,27 @@ import type { ThreadId } from "@t3tools/contracts";
 export interface ThreadDetailPageCursor {
   readonly threadId: ThreadId;
   readonly beforeAnchorAt: string;
-  /** Boundary turn id; "" for the rare turn row with a null turn_id. */
+  /** Exclusive turn-key boundary; "" for the rare turn row with a null turn_id. */
   readonly beforeTurnId: string;
+  /** Direct-target cursors include the exact boundary turn. */
+  readonly includeBoundary?: boolean;
+  /**
+   * Direct-find cursors carry the target's lower time bound so a turnless
+   * message before the first turn can still be fetched without widening the
+   * page to all turnless history. Adjacent pagination cursors omit it.
+   */
+  readonly targetAnchorAt?: string;
 }
 
 export function encodeThreadDetailPageCursor(cursor: ThreadDetailPageCursor): string {
   return Buffer.from(
-    JSON.stringify({ t: cursor.threadId, a: cursor.beforeAnchorAt, i: cursor.beforeTurnId }),
+    JSON.stringify({
+      t: cursor.threadId,
+      a: cursor.beforeAnchorAt,
+      i: cursor.beforeTurnId,
+      ...(cursor.includeBoundary === true ? { b: 1 } : {}),
+      ...(cursor.targetAnchorAt === undefined ? {} : { x: cursor.targetAnchorAt }),
+    }),
   ).toString("base64url");
 }
 
@@ -58,5 +73,17 @@ export function decodeThreadDetailPageCursor(encoded: string): ThreadDetailPageC
   if (typeof record.i !== "string") {
     return null;
   }
-  return { threadId: record.t as ThreadId, beforeAnchorAt: record.a, beforeTurnId: record.i };
+  if (record.x !== undefined && typeof record.x !== "string") {
+    return null;
+  }
+  if (record.b !== undefined && record.b !== 1) {
+    return null;
+  }
+  return {
+    threadId: record.t as ThreadId,
+    beforeAnchorAt: record.a,
+    beforeTurnId: record.i,
+    ...(record.b === 1 ? { includeBoundary: true } : {}),
+    ...(typeof record.x === "string" ? { targetAnchorAt: record.x } : {}),
+  };
 }

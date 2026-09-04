@@ -7257,6 +7257,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
                     turnId: TurnId.make("turn-1"),
                     source: "assistant" as const,
                     occurrenceIndex: 0,
+                    targetCursor: "target-cursor",
                   },
                 ],
               }),
@@ -7353,6 +7354,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             turnId: TurnId.make("turn-1"),
             source: "assistant",
             occurrenceIndex: 0,
+            targetCursor: "target-cursor",
           },
         ],
       });

@@ -34,7 +34,7 @@ export function useThreadFindTarget({
   const onListLoad = useCallback(() => setListLoaded(true), []);
   const navigationRef = useRef<{
     target: ThreadFindTarget;
-    requestedCursors: Set<string>;
+    requestedTargets: Set<string>;
     positioned: boolean;
   } | null>(null);
 
@@ -63,7 +63,7 @@ export function useThreadFindTarget({
       };
       navigationRef.current = {
         target,
-        requestedCursors: new Set(),
+        requestedTargets: new Set(),
         positioned: false,
       };
       onManualNavigation();
@@ -81,14 +81,14 @@ export function useThreadFindTarget({
         return;
       }
       if (loadEarlier.loading) return;
-      const cursor = loadEarlier.cursor ?? entries[0]?.id ?? "first";
-      if (navigation.requestedCursors.has(cursor)) {
-        navigation.positioned = true;
-        setPositionedKey(navigation.target.key);
+      const targetPageKey = `target:${request.match.targetCursor}`;
+      if (loadEarlier.onLoadWindow && !navigation.requestedTargets.has(targetPageKey)) {
+        navigation.requestedTargets.add(targetPageKey);
+        loadEarlier.onLoadWindow(request.match.targetCursor);
         return;
       }
-      navigation.requestedCursors.add(cursor);
-      loadEarlier.onLoadEarlier();
+      navigation.positioned = true;
+      setPositionedKey(navigation.target.key);
       return;
     }
     const row = rows.find(

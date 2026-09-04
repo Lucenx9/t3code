@@ -67,12 +67,16 @@ interface ThreadOlderTurnRequestRegistry {
    * cleanup; registration lives exactly as long as the machine's scope, and a
    * successor machine for the same thread simply replaces the entry.
    */
-  readonly register: (key: string, handler: () => void) => () => void;
-  readonly request: (key: string) => boolean;
+  readonly register: (key: string, handler: (request: ThreadTurnPageRequest) => void) => () => void;
+  readonly request: (key: string, request: ThreadTurnPageRequest) => boolean;
 }
 
+type ThreadTurnPageRequest =
+  | { readonly kind: "adjacent" }
+  | { readonly kind: "target"; readonly beforeCursor: string };
+
 function makeThreadOlderTurnRequestRegistry(): ThreadOlderTurnRequestRegistry {
-  const handlers = new Map<string, () => void>();
+  const handlers = new Map<string, (request: ThreadTurnPageRequest) => void>();
   return {
     register: (key, handler) => {
       handlers.set(key, handler);
@@ -82,12 +86,12 @@ function makeThreadOlderTurnRequestRegistry(): ThreadOlderTurnRequestRegistry {
         }
       };
     },
-    request: (key) => {
+    request: (key, request) => {
       const handler = handlers.get(key);
       if (handler === undefined) {
         return false;
       }
-      handler();
+      handler(request);
       return true;
     },
   };
@@ -116,7 +120,21 @@ export function requestOlderThreadTurns(
   environmentId: EnvironmentIdType,
   threadId: ThreadIdType,
 ): boolean {
-  return defaultOlderTurnRequestRegistry.request(threadKey({ environmentId, threadId }));
+  return defaultOlderTurnRequestRegistry.request(threadKey({ environmentId, threadId }), {
+    kind: "adjacent",
+  });
+}
+
+/** Fetches the bounded history page containing a server-located find target. */
+export function requestThreadTurnsAround(
+  environmentId: EnvironmentIdType,
+  threadId: ThreadIdType,
+  beforeCursor: string,
+): boolean {
+  return defaultOlderTurnRequestRegistry.request(threadKey({ environmentId, threadId }), {
+    kind: "target",
+    beforeCursor,
+  });
 }
 
 function formatThreadError(cause: Cause.Cause<unknown>): string {
@@ -184,6 +202,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
   const pendingOlderPage = yield* Ref.make<{
     readonly snapshot: OrchestrationThreadDetailSnapshot;
     readonly epoch: number;
+    readonly preservePageState: boolean;
   } | null>(null);
   const persistence = yield* Queue.sliding<OrchestrationThreadDetailSnapshot>(1);
 
@@ -395,7 +414,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         return;
       }
       yield* Ref.set(pendingOlderPage, null);
-      yield* mergeOlderPage(pending.snapshot);
+      yield* mergeOlderPage(pending.snapshot, pending.preservePageState);
     },
   );
 
@@ -410,6 +429,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
   // cursor-misuse) case of overlapping pages so a row never renders twice.
   const mergeOlderPage = Effect.fn("EnvironmentThreadState.mergeOlderPage")(function* (
     snapshot: OrchestrationThreadDetailSnapshot,
+    preservePageState = false,
   ) {
     // The merge is built inside the update callback so it composes with
     // whatever thread value is current at commit time. The applyLock already
@@ -425,17 +445,35 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       const mergeById = <T extends { readonly id: string }>(
         olderRows: ReadonlyArray<T>,
         loadedRows: ReadonlyArray<T>,
+        order?: (left: T, right: T) => number,
       ): ReadonlyArray<T> => {
         const seen = new Set(loadedRows.map((row) => row.id));
-        return [...olderRows.filter((row) => !seen.has(row.id)), ...loadedRows];
+        const rows = [...olderRows.filter((row) => !seen.has(row.id)), ...loadedRows];
+        return order ? rows.toSorted(order) : rows;
       };
       const seenCheckpoints = new Set(loaded.checkpoints.map((row) => row.turnId));
       merged = {
         // Thread metadata stays the loaded (newer) snapshot's; only the
         // windowed collections gain rows from the older page.
         ...loaded,
-        messages: mergeById(older.messages, loaded.messages),
-        activities: mergeById(older.activities, loaded.activities),
+        messages: mergeById(
+          older.messages,
+          loaded.messages,
+          preservePageState
+            ? (left, right) =>
+                left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id)
+            : undefined,
+        ),
+        activities: mergeById(
+          older.activities,
+          loaded.activities,
+          preservePageState
+            ? (left, right) =>
+                (left.sequence ?? -1) - (right.sequence ?? -1) ||
+                left.createdAt.localeCompare(right.createdAt) ||
+                left.id.localeCompare(right.id)
+            : undefined,
+        ),
         proposedPlans: mergeById(older.proposedPlans, loaded.proposedPlans),
         checkpoints: [
           ...older.checkpoints.filter((row) => !seenCheckpoints.has(row.turnId)),
@@ -445,7 +483,9 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       return {
         ...value,
         data: Option.some(merged),
-        page: pageStateFromSnapshot(snapshot.page),
+        page: preservePageState
+          ? Option.map(value.page, (page) => ({ ...page, loadingOlder: false }))
+          : pageStateFromSnapshot(snapshot.page),
       };
     });
     // Persist the widened window under the *loaded* watermark: the merged
@@ -453,15 +493,27 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     // with the page's own (possibly newer) sequence.
     if (merged !== null && shouldPersistThread(merged)) {
       const snapshotSequence = yield* SubscriptionRef.get(lastSequence);
+      const currentPage = yield* SubscriptionRef.get(state).pipe(Effect.map((value) => value.page));
       yield* Queue.offer(persistence, {
         snapshotSequence,
         thread: merged,
-        ...(snapshot.page === undefined ? {} : { page: { ...snapshot.page, snapshotSequence } }),
+        ...Option.match(currentPage, {
+          onNone: () => ({}),
+          onSome: (page) => ({
+            page: {
+              beforeCursor: page.beforeCursor,
+              hasMore: page.hasMore,
+              snapshotSequence,
+            },
+          }),
+        }),
       });
     }
   });
 
-  const loadOlderTurns = Effect.fn("EnvironmentThreadState.loadOlderTurns")(function* () {
+  const loadOlderTurns = Effect.fn("EnvironmentThreadState.loadOlderTurns")(function* (
+    request: ThreadTurnPageRequest,
+  ) {
     // Gated on the connected server's capability: a reconnect to a
     // pre-pagination server must never receive window parameters.
     if (!(yield* Ref.get(paginationSupported))) {
@@ -469,9 +521,10 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     }
     const current = yield* SubscriptionRef.get(state);
     const page = Option.getOrNull(current.page);
-    if (page === null || page.loadingOlder || !page.hasMore || page.beforeCursor === null) {
+    if (page === null || page.loadingOlder) {
       return;
     }
+    if (request.kind === "adjacent" && (!page.hasMore || page.beforeCursor === null)) return;
     const prepared = Option.getOrNull(yield* SubscriptionRef.get(supervisor.prepared));
     if (prepared === null) {
       return;
@@ -481,9 +534,11 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       ...value,
       page: Option.map(value.page, (existing) => ({ ...existing, loadingOlder: true })),
     }));
+    const beforeCursor = request.kind === "target" ? request.beforeCursor : page.beforeCursor;
+    if (beforeCursor === null) return;
     const window: ThreadSnapshotWindow = {
       turnLimit: OLDER_THREAD_PAGE_USER_TURN_LIMIT,
-      beforeCursor: page.beforeCursor,
+      beforeCursor,
     };
     const response = yield* snapshotLoader.load(prepared, threadId, window);
     // Staleness check and merge run under the same lock as stream-item
@@ -523,10 +578,11 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
           yield* Ref.set(pendingOlderPage, {
             snapshot: response.value,
             epoch: epochNow,
+            preservePageState: request.kind === "target",
           });
           return;
         }
-        yield* mergeOlderPage(response.value);
+        yield* mergeOlderPage(response.value, request.kind === "target");
       }),
     );
   });
@@ -649,16 +705,14 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
   // "load earlier" coalesces (loadOlderTurns itself no-ops while a fetch is
   // in flight).
   const olderTurnRequestRegistry = yield* ThreadOlderTurnRequests;
-  const olderTurnRequests = yield* Queue.sliding<void>(1);
+  const olderTurnRequests = yield* Queue.sliding<ThreadTurnPageRequest>(1);
   yield* Stream.fromQueue(olderTurnRequests).pipe(
-    Stream.runForEach(() => loadOlderTurns()),
+    Stream.runForEach(loadOlderTurns),
     Effect.forkScoped,
   );
   const deregister = olderTurnRequestRegistry.register(
     threadKey({ environmentId, threadId }),
-    () => {
-      Queue.offerUnsafe(olderTurnRequests, undefined);
-    },
+    (request) => Queue.offerUnsafe(olderTurnRequests, request),
   );
   yield* Effect.addFinalizer(() => Effect.sync(deregister));
 

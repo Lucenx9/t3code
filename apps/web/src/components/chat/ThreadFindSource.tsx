@@ -1,7 +1,7 @@
 import type { LegendListRef } from "@legendapp/list/react";
 import type { OrchestrationThreadFindMatch } from "@t3tools/contracts";
 import { useEffect, useRef, type ReactNode, type RefObject } from "react";
-import { resolveThreadFindRange } from "~/lib/assistantTextSelection";
+import { resolveThreadFindRanges } from "~/lib/assistantTextSelection";
 
 const THREAD_FIND_HIGHLIGHT = "t3-thread-find";
 
@@ -38,6 +38,23 @@ export function observeThreadFindSource({
   let stopped = false;
   let scrolling = false;
   let highlight: Highlight | null = null;
+  const autoExpandedDetails = new Set<HTMLElement>();
+  const expandClosedDetails = () => {
+    let expanded = false;
+    for (const details of root.querySelectorAll<HTMLElement>(
+      '[data-markdown-details][data-markdown-details-open="false"]',
+    )) {
+      const trigger = details.querySelector<HTMLElement>(
+        ":scope > [data-markdown-details-summary]",
+      );
+      if (!trigger) continue;
+      if (autoExpandedDetails.has(trigger)) continue;
+      autoExpandedDetails.add(trigger);
+      trigger.click();
+      expanded = true;
+    }
+    return expanded;
+  };
 
   const clear = () => {
     if (
@@ -63,7 +80,12 @@ export function observeThreadFindSource({
     const state = list.getState();
     const index = state.indexByKey(itemKey);
     if (index === undefined || !(state.sizeAtIndex(index) > 0)) return;
-    const range = resolveThreadFindRange(root, request.query, request.match.occurrenceIndex);
+    if (expandClosedDetails()) {
+      schedule();
+      return;
+    }
+    const ranges = resolveThreadFindRanges(root, request.query, request.match.occurrenceIndex);
+    const range = ranges?.[0] ?? null;
     const rect = (range ?? root).getBoundingClientRect();
     if (rect.height <= 0 || scrollNode.clientHeight <= 0) return;
 
@@ -99,8 +121,13 @@ export function observeThreadFindSource({
     }
 
     clear();
-    if (range && typeof Highlight !== "undefined" && typeof CSS !== "undefined" && CSS.highlights) {
-      highlight = new Highlight(range);
+    if (
+      ranges &&
+      typeof Highlight !== "undefined" &&
+      typeof CSS !== "undefined" &&
+      CSS.highlights
+    ) {
+      highlight = new Highlight(...ranges);
       CSS.highlights.set(THREAD_FIND_HIGHLIGHT, highlight);
     } else {
       root.dataset.threadFindActive = "true";
@@ -113,8 +140,22 @@ export function observeThreadFindSource({
   };
   activation.cancelScroll = cancelScroll;
 
-  const observer = new MutationObserver(schedule);
+  const observedShadowRoots = new Set<ShadowRoot>();
+  const observeDiffShadowRoots = () => {
+    for (const host of root.querySelectorAll<HTMLElement>("diffs-container")) {
+      const shadowRoot = host.shadowRoot;
+      if (!shadowRoot || observedShadowRoots.has(shadowRoot)) continue;
+      observedShadowRoots.add(shadowRoot);
+      observer.observe(shadowRoot, { childList: true, subtree: true, characterData: true });
+    }
+  };
+  const observer = new MutationObserver(() => {
+    observeDiffShadowRoots();
+    schedule();
+  });
   observer.observe(root, { childList: true, subtree: true, characterData: true });
+  observer.observe(scrollNode, { childList: true, subtree: true });
+  observeDiffShadowRoots();
   const resizeObserver = new ResizeObserver(schedule);
   resizeObserver.observe(root);
   resizeObserver.observe(scrollNode);
@@ -134,6 +175,12 @@ export function observeThreadFindSource({
     for (const stop of unsubscribe) stop();
     if (activation.cancelScroll === cancelScroll) delete activation.cancelScroll;
     clear();
+    if (root.isConnected) {
+      for (const trigger of [...autoExpandedDetails].toReversed()) {
+        const details = trigger.closest<HTMLElement>("[data-markdown-details]");
+        if (details?.dataset.markdownDetailsOpen === "true") trigger.click();
+      }
+    }
   };
 }
 

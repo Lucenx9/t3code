@@ -35,6 +35,7 @@ import {
   INITIAL_THREAD_USER_TURN_LIMIT,
   makeEnvironmentThreadState,
   requestOlderThreadTurns,
+  requestThreadTurnsAround,
   ThreadSnapshotLoader,
   type EnvironmentThreadState,
 } from "./threads.ts";
@@ -116,6 +117,11 @@ const WINDOWED_SNAPSHOT: OrchestrationThreadDetailSnapshot = {
   snapshotSequence: 10,
   thread: BASE_THREAD,
   page: { beforeCursor: "cursor-1", hasMore: true, snapshotSequence: 10 },
+};
+
+const EXHAUSTED_WINDOWED_SNAPSHOT: OrchestrationThreadDetailSnapshot = {
+  ...WINDOWED_SNAPSHOT,
+  page: { beforeCursor: "cursor-1", hasMore: false, snapshotSequence: 10 },
 };
 
 const OLDER_PAGE: OrchestrationThreadDetailSnapshot = {
@@ -337,6 +343,40 @@ describe("thread pagination state", () => {
         hasMore: false,
         loadingOlder: false,
       });
+    }),
+  );
+
+  it.effect("loads a find target directly without consuming the adjacent history cursor", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({
+        initialResponse: Option.some(EXHAUSTED_WINDOWED_SNAPSHOT),
+      });
+      yield* harness.awaitState((value) => Option.isSome(value.page));
+
+      expect(requestThreadTurnsAround(TARGET.environmentId, THREAD_ID, "target-cursor")).toBe(true);
+      yield* harness.awaitState((value) =>
+        Option.match(value.page, { onNone: () => false, onSome: (page) => page.loadingOlder }),
+      );
+      const targetMessage = message("message-target", "turn-target", "2026-04-01T00:30:00.000Z");
+      yield* harness.resolveNextPage(
+        Option.some({
+          ...OLDER_PAGE,
+          thread: { ...OLDER_PAGE.thread, messages: [targetMessage] },
+          page: { beforeCursor: "cursor-before-target", hasMore: true, snapshotSequence: 10 },
+        }),
+      );
+
+      const state = yield* harness.awaitState((value) => hasMessage(value, "message-target"));
+      expect(Option.getOrThrow(state.data).messages.map((entry) => entry.id)).toEqual([
+        "message-target",
+        "message-recent",
+      ]);
+      expect(Option.getOrThrow(state.page)).toEqual({
+        beforeCursor: "cursor-1",
+        hasMore: false,
+        loadingOlder: false,
+      });
+      expect((yield* Ref.get(harness.loaderWindows)).at(-1)?.beforeCursor).toBe("target-cursor");
     }),
   );
 

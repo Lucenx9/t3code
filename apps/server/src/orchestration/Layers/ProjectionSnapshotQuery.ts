@@ -30,7 +30,11 @@ import {
   ThreadId,
   THREAD_FIND_RESULT_LIMIT,
 } from "@t3tools/contracts";
-import { countThreadFindOccurrences, threadFindVisibleText } from "@t3tools/shared/threadFind";
+import {
+  countThreadFindOccurrences,
+  normalizeThreadFindQuery,
+  threadFindVisibleText,
+} from "@t3tools/shared/threadFind";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -163,7 +167,14 @@ const ProjectionThreadFindRow = Schema.Struct({
   source: OrchestrationThreadSearchSource,
   text: Schema.String,
   workspaceRoot: Schema.String,
-  updatedAt: IsoDateTime,
+  isStreaming: Schema.Number,
+  targetAnchorAt: IsoDateTime,
+  targetTurnKey: Schema.String,
+});
+const ProjectionThreadFindRevisionRow = Schema.Struct({
+  workspaceRoot: Schema.String,
+  threadCreatedAt: IsoDateTime,
+  searchableMessagesRevision: Schema.Number,
 });
 const WorkspaceRootLookupInput = Schema.Struct({
   workspaceRoot: Schema.String,
@@ -187,10 +198,12 @@ const ThreadActivityIdsLookupInput = Schema.Struct({
 // revert projector's row-id rewrite and full projection rebuilds.
 const ThreadTurnWindowLookupInput = Schema.Struct({
   threadId: ThreadId,
-  // Exclusive keyset upper bound. Sentinels "~"/"" mean unbounded ("~" sorts
-  // after every ISO timestamp).
+  // Keyset upper bound. Adjacent pages are exclusive; direct target pages set
+  // beforeInclusive. Sentinels "~"/"" mean unbounded ("~" sorts after every
+  // ISO timestamp).
   beforeAnchorAt: Schema.String,
   beforeTurnKey: Schema.String,
+  beforeInclusive: Schema.Boolean,
   userTurnLimit: Schema.Number,
   maxRawTurns: Schema.Number,
 });
@@ -203,13 +216,15 @@ const ProjectionTurnWindowRowSchema = Schema.Struct({
 const ThreadTurnRangeLookupInput = Schema.Struct({
   threadId: ThreadId,
   // Turn-linked rows are bounded by the keyset range [min, before) over
-  // (anchor, turn key); turnless rows by the matching [minAnchorAt,
-  // beforeAnchorAt) time range. Unbounded ends use sentinels: "" for the
-  // lower bound, "~" (sorts after ISO dates) for the upper bound.
+  // (anchor, turn key), or [min, before] for a direct target. Turnless rows use
+  // the matching [minAnchorAt, beforeAnchorAt) time range. Unbounded ends use
+  // sentinels: "" for the lower bound, "~" (sorts after ISO dates) for the
+  // upper bound.
   minAnchorAt: Schema.String,
   minTurnKey: Schema.String,
   beforeAnchorAt: Schema.String,
   beforeTurnKey: Schema.String,
+  beforeInclusive: Schema.Boolean,
 });
 const ProjectionProjectLookupRowSchema = ProjectionProjectDbRowSchema;
 const ProjectionThreadIdLookupRowSchema = Schema.Struct({
@@ -414,45 +429,83 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const repositoryIdentityResolver = yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
   type ThreadFindRow = Schema.Schema.Type<typeof ProjectionThreadFindRow>;
+  type ThreadFindRevisionRow = Schema.Schema.Type<typeof ProjectionThreadFindRevisionRow>;
+  type PreparedThreadFindRow = Pick<
+    ThreadFindRow,
+    "messageId" | "turnId" | "source" | "targetAnchorAt" | "targetTurnKey"
+  > & {
+    readonly text: string;
+  };
   type ThreadFindTextCacheEntry = {
     readonly revision: string;
-    readonly texts: ReadonlyArray<string>;
+    readonly skillsKey: string;
+    readonly rows: ReadonlyArray<PreparedThreadFindRow>;
     readonly characterCount: number;
+    matchCounts?: {
+      readonly query: string;
+      readonly counts: ReadonlyArray<number>;
+      readonly total: number;
+    };
   };
   const threadFindTextCache = new Map<ThreadId, ThreadFindTextCacheEntry>();
   let threadFindTextCacheCharacterCount = 0;
-  const threadFindRevision = (rows: ReadonlyArray<ThreadFindRow>) => {
+  const threadFindRevision = (row: ThreadFindRevisionRow | null) => {
+    if (row === null) return "0";
     let revisionHash = 2_166_136_261;
-    for (const row of rows) {
-      const revisionPart = `${row.messageId}\0${row.turnId ?? ""}\0${row.source}\0${row.workspaceRoot}\0${row.updatedAt}`;
-      for (let index = 0; index < revisionPart.length; index += 1) {
-        revisionHash = Math.imul(revisionHash ^ revisionPart.charCodeAt(index), 16_777_619);
+    const revisionPart = `${row.workspaceRoot}\0${row.threadCreatedAt}\0${row.searchableMessagesRevision}`;
+    for (let index = 0; index < revisionPart.length; index += 1) {
+      revisionHash = Math.imul(revisionHash ^ revisionPart.charCodeAt(index), 16_777_619);
+    }
+    return (revisionHash >>> 0).toString(36);
+  };
+  const threadFindSkillsRevision = (
+    skills: ReadonlyArray<{ readonly name: string; readonly displayName?: string }> | undefined,
+  ) => {
+    let revisionHash = 2_166_136_261;
+    for (const skill of skills ?? []) {
+      const label = `${skill.name}\0${skill.displayName ?? ""}\0`;
+      for (let index = 0; index < label.length; index += 1) {
+        revisionHash = Math.imul(revisionHash ^ label.charCodeAt(index), 16_777_619);
       }
     }
-    return `${rows.length.toString(36)}-${(revisionHash >>> 0).toString(36)}`;
+    return (revisionHash >>> 0).toString(36);
   };
-  const resolveThreadFindTexts = (
+  const threadFindSkillsKey = (
+    skills: ReadonlyArray<{ readonly name: string; readonly displayName?: string }> | undefined,
+  ) => JSON.stringify(skills ?? []);
+  const readCachedThreadFindRows = (
     threadId: ThreadId,
     revision: string,
-    rows: ReadonlyArray<ThreadFindRow>,
-  ): ReadonlyArray<string> => {
+    skillsKey: string,
+  ): ThreadFindTextCacheEntry | null => {
     const cached = threadFindTextCache.get(threadId);
-    if (cached?.revision === revision) {
+    if (cached?.revision === revision && cached.skillsKey === skillsKey) {
       threadFindTextCache.delete(threadId);
       threadFindTextCache.set(threadId, cached);
-      return cached.texts;
+      return cached;
     }
     if (cached) {
       threadFindTextCache.delete(threadId);
       threadFindTextCacheCharacterCount -= cached.characterCount;
     }
-    const texts = rows.map((row) =>
-      threadFindVisibleText(row.source, row.text, { workspaceRoot: row.workspaceRoot }),
-    );
-    const characterCount = texts.reduce((sum, text) => sum + text.length, 0);
-    if (characterCount > THREAD_FIND_TEXT_CACHE_MAX_CHARACTERS) return texts;
+    return null;
+  };
+  const cacheThreadFindRows = (
+    threadId: ThreadId,
+    revision: string,
+    skillsKey: string,
+    rows: ReadonlyArray<PreparedThreadFindRow>,
+  ): ThreadFindTextCacheEntry | null => {
+    const characterCount = rows.reduce((sum, row) => sum + row.text.length, 0);
+    if (characterCount > THREAD_FIND_TEXT_CACHE_MAX_CHARACTERS) return null;
 
-    threadFindTextCache.set(threadId, { revision, texts, characterCount });
+    const replaced = threadFindTextCache.get(threadId);
+    if (replaced) {
+      threadFindTextCache.delete(threadId);
+      threadFindTextCacheCharacterCount -= replaced.characterCount;
+    }
+    const entry: ThreadFindTextCacheEntry = { revision, skillsKey, rows, characterCount };
+    threadFindTextCache.set(threadId, entry);
     threadFindTextCacheCharacterCount += characterCount;
     while (
       threadFindTextCache.size > THREAD_FIND_TEXT_CACHE_MAX_THREADS ||
@@ -464,7 +517,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       threadFindTextCache.delete(oldestThreadId);
       threadFindTextCacheCharacterCount -= oldest?.characterCount ?? 0;
     }
-    return texts;
+    return entry;
   };
   const repositoryIdentityResolutionConcurrency = 4;
   const resolveRepositoryIdentitiesForProjects = Effect.fn(
@@ -551,6 +604,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           title_regeneration_request_id AS "titleRegenerationRequestId",
           title_regeneration_started_at AS "titleRegenerationStartedAt",
           latest_user_message_at AS "latestUserMessageAt",
+          searchable_messages_revision AS "searchableMessagesRevision",
           pending_approval_count AS "pendingApprovalCount",
           pending_user_input_count AS "pendingUserInputCount",
           has_actionable_proposed_plan AS "hasActionableProposedPlan",
@@ -589,6 +643,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           title_regeneration_request_id AS "titleRegenerationRequestId",
           title_regeneration_started_at AS "titleRegenerationStartedAt",
           latest_user_message_at AS "latestUserMessageAt",
+          searchable_messages_revision AS "searchableMessagesRevision",
           pending_approval_count AS "pendingApprovalCount",
           pending_user_input_count AS "pendingUserInputCount",
           has_actionable_proposed_plan AS "hasActionableProposedPlan",
@@ -629,6 +684,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           title_regeneration_request_id AS "titleRegenerationRequestId",
           title_regeneration_started_at AS "titleRegenerationStartedAt",
           latest_user_message_at AS "latestUserMessageAt",
+          searchable_messages_revision AS "searchableMessagesRevision",
           pending_approval_count AS "pendingApprovalCount",
           pending_user_input_count AS "pendingUserInputCount",
           has_actionable_proposed_plan AS "hasActionableProposedPlan",
@@ -976,6 +1032,26 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       `,
   });
 
+  const readThreadFindRevision = SqlSchema.findOneOption({
+    Request: ThreadIdLookupInput,
+    Result: ProjectionThreadFindRevisionRow,
+    execute: ({ threadId }) =>
+      sql`
+        SELECT
+          COALESCE(threads.worktree_path, projects.workspace_root) AS "workspaceRoot",
+          threads.created_at AS "threadCreatedAt",
+          threads.searchable_messages_revision AS "searchableMessagesRevision"
+        FROM projection_threads AS threads
+        INNER JOIN projection_projects AS projects
+          ON projects.project_id = threads.project_id
+        WHERE threads.thread_id = ${threadId}
+          AND threads.deleted_at IS NULL
+          AND threads.archived_at IS NULL
+          AND projects.deleted_at IS NULL
+        LIMIT 1
+      `,
+  });
+
   const listThreadFindRows = SqlSchema.findAll({
     Request: ThreadIdLookupInput,
     Result: ProjectionThreadFindRow,
@@ -990,17 +1066,27 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           END AS source,
           messages.text,
           COALESCE(threads.worktree_path, projects.workspace_root) AS "workspaceRoot",
-          messages.updated_at AS "updatedAt"
+          messages.is_streaming AS "isStreaming",
+          COALESCE(turns.requested_at, messages.created_at) AS "targetAnchorAt",
+          COALESCE(turns.turn_id, '') AS "targetTurnKey"
         FROM projection_thread_messages AS messages
         INNER JOIN projection_threads AS threads
           ON threads.thread_id = messages.thread_id
         INNER JOIN projection_projects AS projects
           ON projects.project_id = threads.project_id
+        LEFT JOIN projection_turns AS turns
+          ON turns.thread_id = messages.thread_id
+          AND (
+            turns.turn_id = messages.turn_id
+            OR (
+              messages.turn_id IS NULL
+              AND turns.pending_message_id = messages.message_id
+            )
+          )
         WHERE messages.thread_id = ${threadId}
           AND threads.deleted_at IS NULL
           AND threads.archived_at IS NULL
           AND projects.deleted_at IS NULL
-          AND messages.is_streaming = 0
           AND (
             messages.role = 'user'
             OR (
@@ -1132,6 +1218,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           title_regeneration_request_id AS "titleRegenerationRequestId",
           title_regeneration_started_at AS "titleRegenerationStartedAt",
           latest_user_message_at AS "latestUserMessageAt",
+          searchable_messages_revision AS "searchableMessagesRevision",
           pending_approval_count AS "pendingApprovalCount",
           pending_user_input_count AS "pendingUserInputCount",
           has_actionable_proposed_plan AS "hasActionableProposedPlan",
@@ -1408,8 +1495,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
   });
 
   // Resolves a page of recent turns for a windowed thread detail read. Walks
-  // back from the exclusive (beforeAnchorAt, beforeTurnKey) keyset boundary
-  // (sentinels "~"/"" mean unbounded, i.e. the first page) until it has seen
+  // back from the normally-exclusive (beforeAnchorAt, beforeTurnKey) keyset
+  // boundary (direct targets include their exact boundary; sentinels "~"/""
+  // mean unbounded, i.e. the first page) until it has seen
   // `userTurnLimit` user-anchored turns — turns whose pending message is a
   // user message; subagent/fan-out turns between them ride along — or hits the
   // `maxRawTurns` ceiling that bounds pathological fan-out. The `candidates`
@@ -1453,7 +1541,14 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
   const listTurnWindowRows = SqlSchema.findAll({
     Request: ThreadTurnWindowLookupInput,
     Result: ProjectionTurnWindowRowSchema,
-    execute: ({ threadId, beforeAnchorAt, beforeTurnKey, userTurnLimit, maxRawTurns }) =>
+    execute: ({
+      threadId,
+      beforeAnchorAt,
+      beforeTurnKey,
+      beforeInclusive,
+      userTurnLimit,
+      maxRawTurns,
+    }) =>
       sql`
         WITH candidates AS (
           SELECT
@@ -1466,7 +1561,13 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               turns.requested_at < ${beforeAnchorAt}
               OR (
                 turns.requested_at = ${beforeAnchorAt}
-                AND COALESCE(turns.turn_id, '') < ${beforeTurnKey}
+                AND (
+                  COALESCE(turns.turn_id, '') < ${beforeTurnKey}
+                  OR (
+                    ${beforeInclusive ? 1 : 0} = 1
+                    AND COALESCE(turns.turn_id, '') = ${beforeTurnKey}
+                  )
+                )
               )
             )
           ORDER BY turns.requested_at DESC, turns.turn_id DESC
@@ -1496,15 +1597,22 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
 
   // Windowed variants of the two heavy collections. Turn-linked rows are
   // bounded by the page's (anchor, turn key) keyset range over
-  // projection_turns; rows with no turn linkage (user messages always, and
-  // turnless activities like pre-turn context-window updates) are bounded by
-  // the matching turn-anchor time range so they land on the same page as the
-  // turns around them. Proposed plans and checkpoints stay unwindowed: they
-  // are metadata-scale.
+  // projection_turns. Pending user messages follow their turn through
+  // pending_message_id; genuinely turnless messages and activities are
+  // bounded by the matching turn-anchor time range so they land on the same
+  // page as the turns around them. Proposed plans and checkpoints stay
+  // unwindowed: they are metadata-scale.
   const listThreadMessageRowsByThreadWindow = SqlSchema.findAll({
     Request: ThreadTurnRangeLookupInput,
     Result: ProjectionThreadMessageDbRowSchema,
-    execute: ({ threadId, minAnchorAt, minTurnKey, beforeAnchorAt, beforeTurnKey }) =>
+    execute: ({
+      threadId,
+      minAnchorAt,
+      minTurnKey,
+      beforeAnchorAt,
+      beforeTurnKey,
+      beforeInclusive,
+    }) =>
       sql`
         SELECT
           message_id AS "messageId",
@@ -1534,7 +1642,35 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   requested_at < ${beforeAnchorAt}
                   OR (
                     requested_at = ${beforeAnchorAt}
-                    AND turn_id < ${beforeTurnKey}
+                    AND (
+                      turn_id < ${beforeTurnKey}
+                      OR (${beforeInclusive ? 1 : 0} = 1 AND turn_id = ${beforeTurnKey})
+                    )
+                  )
+                )
+            )
+            OR message_id IN (
+              SELECT pending_message_id FROM projection_turns
+              WHERE thread_id = ${threadId}
+                AND pending_message_id IS NOT NULL
+                AND (
+                  requested_at > ${minAnchorAt}
+                  OR (
+                    requested_at = ${minAnchorAt}
+                    AND COALESCE(turn_id, '') >= ${minTurnKey}
+                  )
+                )
+                AND (
+                  requested_at < ${beforeAnchorAt}
+                  OR (
+                    requested_at = ${beforeAnchorAt}
+                    AND (
+                      COALESCE(turn_id, '') < ${beforeTurnKey}
+                      OR (
+                        ${beforeInclusive ? 1 : 0} = 1
+                        AND COALESCE(turn_id, '') = ${beforeTurnKey}
+                      )
+                    )
                   )
                 )
             )
@@ -1655,7 +1791,14 @@ pending_approval_requests AS (
   const listThreadActivityRowsByThreadWindow = SqlSchema.findAll({
     Request: ThreadTurnRangeLookupInput,
     Result: ProjectionThreadActivityDbRowSchema,
-    execute: ({ threadId, minAnchorAt, minTurnKey, beforeAnchorAt, beforeTurnKey }) =>
+    execute: ({
+      threadId,
+      minAnchorAt,
+      minTurnKey,
+      beforeAnchorAt,
+      beforeTurnKey,
+      beforeInclusive,
+    }) =>
       sql`
         SELECT
           activity_id AS "activityId",
@@ -1696,7 +1839,10 @@ pending_approval_requests AS (
                     requested_at < ${beforeAnchorAt}
                     OR (
                       requested_at = ${beforeAnchorAt}
-                      AND turn_id < ${beforeTurnKey}
+                      AND (
+                        turn_id < ${beforeTurnKey}
+                        OR (${beforeInclusive ? 1 : 0} = 1 AND turn_id = ${beforeTurnKey})
+                      )
                     )
                   )
               )
@@ -1722,7 +1868,14 @@ pending_approval_requests AS (
   const listThreadActivityIdsByThreadWindow = SqlSchema.findAll({
     Request: ThreadTurnRangeLookupInput,
     Result: ProjectionThreadActivityIdRowSchema,
-    execute: ({ threadId, minAnchorAt, minTurnKey, beforeAnchorAt, beforeTurnKey }) =>
+    execute: ({
+      threadId,
+      minAnchorAt,
+      minTurnKey,
+      beforeAnchorAt,
+      beforeTurnKey,
+      beforeInclusive,
+    }) =>
       sql`
         SELECT activity_id AS "activityId"
         FROM projection_thread_activities
@@ -1743,7 +1896,10 @@ pending_approval_requests AS (
                   requested_at < ${beforeAnchorAt}
                   OR (
                     requested_at = ${beforeAnchorAt}
-                    AND turn_id < ${beforeTurnKey}
+                    AND (
+                      turn_id < ${beforeTurnKey}
+                      OR (${beforeInclusive ? 1 : 0} = 1 AND turn_id = ${beforeTurnKey})
+                    )
                   )
                 )
             )
@@ -2418,6 +2574,7 @@ pending_approval_requests AS (
                       titleRegeneration: mapTitleRegeneration(row),
                       session: sessionByThread.get(row.threadId) ?? null,
                       latestUserMessageAt: row.latestUserMessageAt,
+                      searchableMessagesRevision: row.searchableMessagesRevision ?? 0,
                       hasPendingApprovals: row.pendingApprovalCount > 0,
                       hasPendingUserInput: row.pendingUserInputCount > 0,
                       hasActionableProposedPlan: row.hasActionableProposedPlan > 0,
@@ -2566,6 +2723,7 @@ pending_approval_requests AS (
                 titleRegeneration: mapTitleRegeneration(row),
                 session: sessionByThread.get(row.threadId) ?? null,
                 latestUserMessageAt: row.latestUserMessageAt,
+                searchableMessagesRevision: row.searchableMessagesRevision ?? 0,
                 hasPendingApprovals: row.pendingApprovalCount > 0,
                 hasPendingUserInput: row.pendingUserInputCount > 0,
                 hasActionableProposedPlan: row.hasActionableProposedPlan > 0,
@@ -2666,18 +2824,59 @@ pending_approval_requests AS (
   const findThread: ProjectionSnapshotQueryShape["findThread"] = Effect.fn(
     "ProjectionSnapshotQuery.findThread",
   )(function* (input) {
-    const rows = yield* listThreadFindRows({ threadId: input.threadId }).pipe(
+    const revisionOption = yield* readThreadFindRevision({ threadId: input.threadId }).pipe(
       Effect.mapError(
         toPersistenceSqlOrDecodeError(
-          "ProjectionSnapshotQuery.findThread:query",
-          "ProjectionSnapshotQuery.findThread:decodeRows",
+          "ProjectionSnapshotQuery.findThread:revisionQuery",
+          "ProjectionSnapshotQuery.findThread:decodeRevision",
         ),
       ),
     );
-    const revision = threadFindRevision(rows);
-    const texts = resolveThreadFindTexts(input.threadId, revision, rows);
-    const counts = texts.map((text) => countThreadFindOccurrences(text, input.query));
-    const total = counts.reduce((sum, count) => sum + count, 0);
+    const revisionRow = Option.getOrNull(revisionOption);
+    const skillsKey = threadFindSkillsKey(input.skills);
+    const revision = `${threadFindRevision(revisionRow)}-${threadFindSkillsRevision(input.skills)}`;
+    let cacheEntry = readCachedThreadFindRows(input.threadId, revision, skillsKey);
+    if (revisionRow === null) {
+      return { revision, total: 0, startIndex: 0, matches: [] };
+    }
+
+    let rows = cacheEntry?.rows;
+    if (!rows) {
+      const sourceRows = yield* listThreadFindRows({ threadId: input.threadId }).pipe(
+        Effect.mapError(
+          toPersistenceSqlOrDecodeError(
+            "ProjectionSnapshotQuery.findThread:query",
+            "ProjectionSnapshotQuery.findThread:decodeRows",
+          ),
+        ),
+      );
+      rows = sourceRows.map((row) => ({
+        messageId: row.messageId,
+        turnId: row.turnId,
+        source: row.source,
+        targetAnchorAt: row.targetAnchorAt,
+        targetTurnKey: row.targetTurnKey,
+        text: threadFindVisibleText(row.source, row.text, {
+          workspaceRoot: row.workspaceRoot,
+          streaming: row.isStreaming !== 0,
+          skills: input.skills,
+        }),
+      }));
+      cacheEntry = cacheThreadFindRows(input.threadId, revision, skillsKey, rows);
+    }
+
+    const normalizedQuery = normalizeThreadFindQuery(input.query);
+    let counts =
+      cacheEntry?.matchCounts?.query === normalizedQuery
+        ? cacheEntry.matchCounts.counts
+        : undefined;
+    let total =
+      cacheEntry?.matchCounts?.query === normalizedQuery ? cacheEntry.matchCounts.total : undefined;
+    if (!counts || total === undefined) {
+      counts = rows.map((row) => countThreadFindOccurrences(row.text, normalizedQuery));
+      total = counts.reduce((sum, count) => sum + count, 0);
+      if (cacheEntry) cacheEntry.matchCounts = { query: normalizedQuery, counts, total };
+    }
     const limit = input.limit ?? THREAD_FIND_RESULT_LIMIT;
     const startIndex = total === 0 ? 0 : Math.min(input.startIndex ?? 0, total - 1);
     const matches = [];
@@ -2685,18 +2884,30 @@ pending_approval_requests AS (
     for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
       const row = rows[rowIndex]!;
       const count = counts[rowIndex]!;
-      for (let occurrenceIndex = 0; occurrenceIndex < count; occurrenceIndex += 1) {
-        if (ordinal >= startIndex && matches.length < limit) {
-          matches.push({
-            messageId: row.messageId,
-            turnId: row.turnId,
-            source: row.source,
-            occurrenceIndex,
-          });
-        }
-        ordinal += 1;
-        if (matches.length >= limit) break;
+      const rowEnd = ordinal + count;
+      if (rowEnd <= startIndex) {
+        ordinal = rowEnd;
+        continue;
       }
+      const firstOccurrenceIndex = Math.max(0, startIndex - ordinal);
+      const available = Math.min(count - firstOccurrenceIndex, limit - matches.length);
+      for (let offset = 0; offset < available; offset += 1) {
+        matches.push({
+          messageId: row.messageId,
+          turnId: row.turnId,
+          source: row.source,
+          occurrenceIndex: firstOccurrenceIndex + offset,
+          targetCursor: encodeThreadDetailPageCursor({
+            threadId: input.threadId,
+            beforeAnchorAt:
+              row.targetTurnKey.length > 0 ? row.targetAnchorAt : `${row.targetAnchorAt}\uffff`,
+            beforeTurnId: row.targetTurnKey,
+            ...(row.targetTurnKey.length > 0 ? { includeBoundary: true } : {}),
+            targetAnchorAt: row.targetAnchorAt,
+          }),
+        });
+      }
+      ordinal = rowEnd;
       if (matches.length >= limit) break;
     }
 
@@ -2905,6 +3116,7 @@ pending_approval_requests AS (
         titleRegeneration: mapTitleRegeneration(threadRow.value),
         session: Option.isSome(sessionRow) ? mapSessionRow(sessionRow.value) : null,
         latestUserMessageAt: threadRow.value.latestUserMessageAt,
+        searchableMessagesRevision: threadRow.value.searchableMessagesRevision ?? 0,
         hasPendingApprovals: threadRow.value.pendingApprovalCount > 0,
         hasPendingUserInput: threadRow.value.pendingUserInputCount > 0,
         hasActionableProposedPlan: threadRow.value.hasActionableProposedPlan > 0,
@@ -2923,6 +3135,7 @@ pending_approval_requests AS (
     readonly minTurnKey: string;
     readonly beforeAnchorAt: string;
     readonly beforeTurnKey: string;
+    readonly beforeInclusive: boolean;
   }
 
   type ThreadDetailActivityRead =
@@ -3234,6 +3447,7 @@ pending_approval_requests AS (
             threadId,
             beforeAnchorAt: cursor?.beforeAnchorAt ?? ANCHOR_UNBOUNDED,
             beforeTurnKey: cursor?.beforeTurnId ?? "",
+            beforeInclusive: cursor?.includeBoundary === true,
             userTurnLimit: window.turnLimit,
             maxRawTurns: THREAD_DETAIL_MAX_RAW_TURNS_PER_PAGE,
           }).pipe(
@@ -3248,9 +3462,10 @@ pending_approval_requests AS (
           const oldest = windowRows[0];
           // An empty window (no turns before the cursor, or a thread with no
           // turns at all) still returns thread metadata with empty collections
-          // for turn-linked rows; turnless rows are bounded to the same empty
-          // range. The first page of a turnless thread stays unwindowed so
-          // pre-turn content (e.g. a just-created thread) is not hidden.
+          // for turn-linked rows. A direct-find cursor keeps only its target
+          // timestamp instead of widening to all turnless history. The first
+          // page of a turnless thread stays unwindowed so pre-turn content
+          // (e.g. a just-created thread) is not hidden.
           const bounds: ThreadDetailBounds | undefined =
             oldest === undefined && cursor === null
               ? undefined
@@ -3259,16 +3474,35 @@ pending_approval_requests AS (
                   minTurnKey: oldest?.turnKey ?? "",
                   beforeAnchorAt: cursor?.beforeAnchorAt ?? ANCHOR_UNBOUNDED,
                   beforeTurnKey: cursor?.beforeTurnId ?? "",
+                  beforeInclusive: cursor?.includeBoundary === true,
                 };
-          // Empty window behind a cursor: nothing older remains.
+          // Empty ordinary window behind a cursor: nothing older remains.
+          const targetOnlyBounds =
+            oldest === undefined && cursor?.targetAnchorAt !== undefined
+              ? {
+                  minAnchorAt: cursor.targetAnchorAt,
+                  minTurnKey: "",
+                  beforeAnchorAt: cursor.beforeAnchorAt,
+                  beforeTurnKey: cursor.beforeTurnId,
+                  beforeInclusive: cursor.includeBoundary === true,
+                }
+              : undefined;
           const emptyBounds =
             oldest === undefined && cursor !== null
-              ? { minAnchorAt: "", minTurnKey: "", beforeAnchorAt: "", beforeTurnKey: "" }
+              ? {
+                  minAnchorAt: "",
+                  minTurnKey: "",
+                  beforeAnchorAt: "",
+                  beforeTurnKey: "",
+                  beforeInclusive: false,
+                }
               : undefined;
 
-          const thread = yield* getThreadDetailByIdBounded(threadId, emptyBounds ?? bounds, {
-            mode: "client",
-          });
+          const thread = yield* getThreadDetailByIdBounded(
+            threadId,
+            targetOnlyBounds ?? emptyBounds ?? bounds,
+            { mode: "client" },
+          );
           if (Option.isNone(thread)) {
             return Option.none<OrchestrationThreadDetailSnapshot>();
           }
@@ -3279,6 +3513,7 @@ pending_approval_requests AS (
               threadId,
               beforeAnchorAt: oldest.anchorAt,
               beforeTurnKey: oldest.turnKey,
+              beforeInclusive: false,
               userTurnLimit: 1,
               maxRawTurns: 1,
             }).pipe(

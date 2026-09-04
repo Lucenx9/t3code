@@ -233,6 +233,29 @@ function buildAssistantTimelineEntry(text: string) {
 }
 
 describe("MessagesTimeline", () => {
+  it("shows adjacent-history loading only while older turns remain", () => {
+    const loadEarlier = {
+      loading: false,
+      hasMore: true,
+      cursor: "cursor-1",
+      onLoadEarlier: () => {},
+      onLoadWindow: () => {},
+    };
+    const props = {
+      ...buildProps(),
+      timelineEntries: [buildUserTimelineEntry("Current window")],
+    };
+
+    expect(
+      renderToStaticMarkup(<MessagesTimeline {...props} loadEarlier={loadEarlier} />),
+    ).toContain("Load earlier turns");
+    expect(
+      renderToStaticMarkup(
+        <MessagesTimeline {...props} loadEarlier={{ ...loadEarlier, hasMore: false }} />,
+      ),
+    ).not.toContain("Load earlier turns");
+  });
+
   it("renders a feedback command and its pending response as normal thread messages", () => {
     const submission = {
       id: MessageId.make("feedback-command"),

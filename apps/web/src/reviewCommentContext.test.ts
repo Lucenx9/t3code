@@ -18,7 +18,7 @@ describe("review comment context parsing", () => {
       [
         'Before <review_comment sectionId="turn:2" sectionTitle="Turn 2" filePath="apps/web/src/lib/contextWindow.test.ts" startIndex="3" endIndex="14" rangeLabel="+47 to +58">',
         "Wadduo",
-        "```diff",
+        "```Diff",
         "@@ -0,0 +47,2 @@",
         '+  it("keeps valid zero-usage snapshots", () => {',
         "+    expect(snapshot).not.toBeNull();",
@@ -58,7 +58,7 @@ describe("review comment context parsing", () => {
       [
         '<review_comment sectionId="s" filePath="src/app.ts" startIndex="0" endIndex="0">',
         "Please check this.",
-        "```diff",
+        "```Diff",
         "@@ -1,1 +1,1 @@",
         "-old",
         "+new",

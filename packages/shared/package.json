@@ -179,6 +179,18 @@
       "types": "./src/threadFind.ts",
       "import": "./src/threadFind.ts"
     },
+    "./threadFindMatch": {
+      "types": "./src/threadFindMatch.ts",
+      "import": "./src/threadFindMatch.ts"
+    },
+    "./reviewDiffPresentation": {
+      "types": "./src/reviewDiffPresentation.ts",
+      "import": "./src/reviewDiffPresentation.ts"
+    },
+    "./providerSkills": {
+      "types": "./src/providerSkills.ts",
+      "import": "./src/providerSkills.ts"
+    },
     "./markdownLinks": {
       "types": "./src/markdownLinks.ts",
       "import": "./src/markdownLinks.ts"
@@ -190,6 +202,10 @@
     "./markdownGithubAlerts": {
       "types": "./src/markdownGithubAlerts.ts",
       "import": "./src/markdownGithubAlerts.ts"
+    },
+    "./markdownListIndentation": {
+      "types": "./src/markdownListIndentation.ts",
+      "import": "./src/markdownListIndentation.ts"
     },
     "./codexArtifactTemplates": {
       "types": "./src/codexArtifactTemplates.ts",

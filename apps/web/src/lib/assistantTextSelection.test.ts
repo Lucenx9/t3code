@@ -15,7 +15,7 @@ import {
   captureAssistantTextSelection,
   createAssistantTextSelector,
   findAssistantCitationText,
-  resolveThreadFindRange,
+  resolveThreadFindRanges,
 } from "./assistantTextSelection";
 
 function selector(
@@ -47,6 +47,8 @@ function roundTripSelector(selector: AssistantTextSelector) {
 class SelectionNode {
   parentElement: SelectionNode | null = null;
   childNodes: SelectionNode[] = [];
+  shadowRoot: SelectionNode | null = null;
+  host: SelectionNode | null = null;
 
   constructor(
     readonly tagName: string,
@@ -79,6 +81,12 @@ class SelectionNode {
     this.childNodes.push(...children);
     return this;
   }
+  attachShadow(...children: SelectionNode[]) {
+    const shadowRoot = new SelectionNode("#shadow-root").append(...children);
+    shadowRoot.host = this;
+    this.shadowRoot = shadowRoot;
+    return this;
+  }
   contains(node: SelectionNode): boolean {
     return node === this || this.childNodes.some((child) => child.contains(node));
   }
@@ -94,6 +102,17 @@ class SelectionNode {
   }
   closest(selector: string): SelectionNode | null {
     return this.matches(selector) ? this : (this.parentElement?.closest(selector) ?? null);
+  }
+  querySelector(selector: string): SelectionNode | null {
+    for (const child of this.childNodes) {
+      if (child.matches(selector)) return child;
+      const descendant = child.querySelector(selector);
+      if (descendant) return descendant;
+    }
+    return null;
+  }
+  getRootNode(): SelectionNode {
+    return this.parentElement?.getRootNode() ?? this;
   }
 
   readonly ownerDocument = {
@@ -361,7 +380,7 @@ describe("captureAssistantTextSelection", () => {
   });
 });
 
-describe("resolveThreadFindRange", () => {
+describe("resolveThreadFindRanges", () => {
   it("finds a case-insensitive occurrence across rendered block text", () => {
     const first = textNode("First find");
     const second = textNode("FIND here");
@@ -371,7 +390,7 @@ describe("resolveThreadFindRange", () => {
       new SelectionNode("BUTTON").append(textNode("find in control")),
     );
 
-    const range = resolveThreadFindRange(source as unknown as HTMLElement, "find", 1);
+    const [range] = resolveThreadFindRanges(source as unknown as HTMLElement, "find", 1) ?? [];
     expect(range?.startContainer).toBe(second);
     expect(range?.startOffset).toBe(0);
     expect(range?.endContainer).toBe(second);
@@ -385,11 +404,98 @@ describe("resolveThreadFindRange", () => {
       new SelectionNode("PRE").append(new SelectionNode("CODE").append(body)),
     );
 
-    const range = resolveThreadFindRange(source as unknown as HTMLElement, "report", 0);
+    const [range] = resolveThreadFindRanges(source as unknown as HTMLElement, "report", 0) ?? [];
     expect(range?.startContainer).toBe(body);
     expect(range?.startOffset).toBe(0);
     expect(range?.endContainer).toBe(body);
     expect(range?.endOffset).toBe(6);
+  });
+
+  it("includes visible contenteditable=false citation chips", () => {
+    const label = textNode("Please revise this quote");
+    const source = assistantSource(
+      new SelectionNode("SPAN", "", {
+        contenteditable: "false",
+        "data-assistant-citation-chip": "true",
+      }).append(label),
+    );
+
+    const [range] =
+      resolveThreadFindRanges(source as unknown as HTMLElement, "revise this", 0) ?? [];
+    expect(range?.startContainer).toBe(label);
+    expect(range?.startOffset).toBe(7);
+    expect(range?.endContainer).toBe(label);
+    expect(range?.endOffset).toBe(18);
+  });
+
+  it("includes visible details summaries without including other controls", () => {
+    const summary = textNode("Verification details");
+    const body = textNode("Hidden target");
+    const source = assistantSource(
+      new SelectionNode("BUTTON", "", { "data-markdown-details-summary": "" }).append(summary),
+      new SelectionNode("DIV").append(body),
+      new SelectionNode("BUTTON").append(textNode("Copy hidden target")),
+    );
+
+    const [summaryRange] =
+      resolveThreadFindRanges(source as unknown as HTMLElement, "verification", 0) ?? [];
+    expect(summaryRange?.startContainer).toBe(summary);
+    expect(summaryRange?.startOffset).toBe(0);
+    expect(summaryRange?.endContainer).toBe(summary);
+    expect(summaryRange?.endOffset).toBe(12);
+
+    const [bodyRange] =
+      resolveThreadFindRanges(source as unknown as HTMLElement, "hidden target", 0) ?? [];
+    expect(bodyRange?.startContainer).toBe(body);
+  });
+
+  it("finds review diff code inside an open shadow root without indexing its gutter", () => {
+    const gutter = new SelectionNode("DIV", "", { "data-gutter": "" }).append(textNode("47"));
+    const needle = textNode("new shadow needle");
+    const content = new SelectionNode("DIV", "", { "data-content": "" }).append(
+      new SelectionNode("DIV", "", { "data-line": "47" }).append(needle),
+      new SelectionNode("DIV", "", { "data-separator": "" }).append(
+        textNode("12 unmodified lines"),
+      ),
+      new SelectionNode("SPAN", "", { "data-no-newline": "" }).append(
+        textNode("No newline at end of file"),
+      ),
+    );
+    const diff = new SelectionNode("DIFFS-CONTAINER").attachShadow(gutter, content);
+    const source = assistantSource(new SelectionNode("P").append(textNode("Review")), diff);
+
+    const [range] =
+      resolveThreadFindRanges(source as unknown as HTMLElement, "shadow needle", 0) ?? [];
+    expect(range?.startContainer).toBe(needle);
+    expect(range?.startOffset).toBe(4);
+    expect(resolveThreadFindRanges(source as unknown as HTMLElement, "47", 0)).toBeNull();
+    expect(
+      resolveThreadFindRanges(source as unknown as HTMLElement, "unmodified lines", 0),
+    ).toBeNull();
+    expect(
+      resolveThreadFindRanges(source as unknown as HTMLElement, "newline at end", 0),
+    ).toBeNull();
+  });
+
+  it("splits a match at every light DOM and shadow DOM boundary", () => {
+    const before = textNode("before");
+    const first = textNode("first");
+    const second = textNode("second");
+    const firstDiff = new SelectionNode("DIFFS-CONTAINER").attachShadow(
+      new SelectionNode("DIV", "", { "data-content": "" }).append(first),
+    );
+    const secondDiff = new SelectionNode("DIFFS-CONTAINER").attachShadow(
+      new SelectionNode("DIV", "", { "data-content": "" }).append(second),
+    );
+    const source = assistantSource(new SelectionNode("P").append(before), firstDiff, secondDiff);
+
+    const ranges = resolveThreadFindRanges(
+      source as unknown as HTMLElement,
+      "before first second",
+      0,
+    );
+    expect(ranges?.map((range) => range.startContainer)).toEqual([before, first, second]);
+    expect(ranges?.map((range) => range.endContainer)).toEqual([before, first, second]);
   });
 });
 

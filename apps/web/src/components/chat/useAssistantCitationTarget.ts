@@ -8,8 +8,10 @@ import { toastManager } from "../ui/toast";
 
 export interface CitationHistoryPage {
   readonly loading: boolean;
+  readonly hasMore: boolean;
   readonly cursor?: string | null;
   readonly onLoadEarlier: () => void;
+  readonly onLoadWindow?: (beforeCursor: string) => void;
 }
 
 /** Fetch, unfold, and mount the source before its measured quote owns scrolling. */
@@ -88,7 +90,7 @@ export function useAssistantCitationTarget({
         entry.kind === "message" && entry.message.id === navigation.target.citation.messageId,
     );
     if (!source) {
-      if (loadEarlier) {
+      if (loadEarlier?.hasMore) {
         if (loadEarlier.loading) return;
         const cursor = loadEarlier.cursor ?? entries[0]?.id ?? "first";
         if (navigation.requestedPages.has(cursor) || navigation.requestedPages.size >= 20) {
