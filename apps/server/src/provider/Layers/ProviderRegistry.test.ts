@@ -1270,6 +1270,9 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
               emptyScopedProvider.workspaceSnapshots[0],
             );
             assert.strictEqual(yield* Ref.get(snapshotCalls), 2);
+            yield* registry.refreshWorkspaceSnapshot({ instanceId, cwd: "/workspace" });
+            assert.strictEqual(yield* Ref.get(snapshotCalls), 2);
+            yield* TestClock.adjust("1 minute");
             yield* Ref.set(
               snapshotResult,
               Deferred.succeed(probeStarted, undefined).pipe(

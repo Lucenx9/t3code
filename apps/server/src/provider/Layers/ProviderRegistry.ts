@@ -30,6 +30,7 @@ import {
   type ServerProviderUpdateState,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Equal from "effect/Equal";
 import * as FileSystem from "effect/FileSystem";
@@ -79,6 +80,24 @@ const hasModelCapabilities = (model: ServerProvider["models"][number]): boolean 
   (model.capabilities?.optionDescriptors?.length ?? 0) > 0;
 
 const MAX_WORKSPACE_SNAPSHOTS_PER_PROVIDER = 16;
+const EMPTY_WORKSPACE_SKILL_DISCOVERY_RETRY_MS = 60_000;
+
+type WorkspaceEmptyScanTimes = ReadonlyMap<ProviderInstance, ReadonlyMap<string, number>>;
+
+const updateWorkspaceEmptyScanTime = (
+  scans: WorkspaceEmptyScanTimes,
+  instance: ProviderInstance,
+  cwd: string,
+  scannedAt: number | undefined,
+): WorkspaceEmptyScanTimes => {
+  const nextScans = new Map(scans);
+  const instanceScans = new Map(nextScans.get(instance));
+  if (scannedAt === undefined) instanceScans.delete(cwd);
+  else instanceScans.set(cwd, scannedAt);
+  if (instanceScans.size > 0) nextScans.set(instance, instanceScans);
+  else nextScans.delete(instance);
+  return nextScans;
+};
 
 const hasCompleteWorkspaceSnapshot = (provider: ServerProvider, cwd: string): boolean =>
   provider.workspaceSnapshots?.some(
@@ -335,6 +354,7 @@ export const ProviderRegistryLive = Layer.effect(
     const workspaceRefreshesRef = yield* Ref.make<
       ReadonlyMap<ProviderInstance, ReadonlySet<string>>
     >(new Map());
+    const workspaceEmptyScanTimesRef = yield* Ref.make<WorkspaceEmptyScanTimes>(new Map());
     const maintenanceActionStatesRef = yield* Ref.make<
       ReadonlyMap<ProviderInstanceId, { readonly update?: ServerProviderUpdateState | undefined }>
     >(new Map());
@@ -670,6 +690,11 @@ export const ProviderRegistryLive = Layer.effect(
           nextSubs.set(instanceId, instance);
         }
         yield* Ref.set(liveSubsRef, nextSubs);
+        const activeInstances = new Set(nextSubs.values());
+        yield* Ref.update(
+          workspaceEmptyScanTimesRef,
+          (scans) => new Map([...scans].filter(([instance]) => activeInstances.has(instance))),
+        );
 
         // Drop aggregator state for instances that have disappeared —
         // otherwise the UI would keep rendering ghosts.
@@ -792,32 +817,56 @@ export const ProviderRegistryLive = Layer.effect(
         return [true, next] as const;
       });
       if (!claimed) return yield* Ref.get(providersRef);
-      return yield* instance.snapshotForCwd(input.cwd).pipe(
-        Effect.flatMap((scopedSnapshot) =>
-          !shouldCacheWorkspaceSnapshot(scopedSnapshot, input.cwd)
-            ? Ref.get(providersRef)
-            : instanceRegistry.getInstance(input.instanceId).pipe(
-                Effect.flatMap((currentInstance) => {
-                  if (currentInstance !== instance) return Ref.get(providersRef);
-                  return Ref.modify(providersRef, (currentProviders) => {
-                    const nextProviders = currentProviders.map((candidate) =>
-                      candidate.instanceId === input.instanceId &&
-                      !hasCompleteWorkspaceSnapshot(candidate, input.cwd)
-                        ? upsertProviderWorkspaceSnapshot(candidate, input.cwd, scopedSnapshot)
-                        : candidate,
-                    );
-                    return [[currentProviders, nextProviders] as const, nextProviders];
-                  }).pipe(
-                    Effect.tap(([previousProviders, nextProviders]) =>
-                      haveProvidersChanged(previousProviders, nextProviders)
-                        ? PubSub.publish(changesPubSub, nextProviders)
-                        : Effect.void,
-                    ),
-                    Effect.map(([, nextProviders]) => nextProviders),
-                  );
-                }),
-              ),
-        ),
+      return yield* Effect.gen(function* () {
+        const now = yield* Clock.currentTimeMillis;
+        const lastEmptyScan = (yield* Ref.get(workspaceEmptyScanTimesRef))
+          .get(instance)
+          ?.get(input.cwd);
+        if (
+          lastEmptyScan !== undefined &&
+          now >= lastEmptyScan &&
+          now - lastEmptyScan < EMPTY_WORKSPACE_SKILL_DISCOVERY_RETRY_MS
+        ) {
+          return yield* Ref.get(providersRef);
+        }
+        return yield* instance.snapshotForCwd(input.cwd).pipe(
+          Effect.flatMap((scopedSnapshot) =>
+            Effect.gen(function* () {
+              if (!shouldCacheWorkspaceSnapshot(scopedSnapshot, input.cwd)) {
+                return yield* Ref.get(providersRef);
+              }
+              const currentInstance = yield* instanceRegistry.getInstance(input.instanceId);
+              if (currentInstance !== instance) return yield* Ref.get(providersRef);
+              const workspaceSnapshot = scopedSnapshot.workspaceSnapshots?.find(
+                (snapshot) => snapshot.cwd === input.cwd,
+              );
+              const scannedAt =
+                workspaceSnapshot?.skillsDiscoveryPending === true
+                  ? yield* Clock.currentTimeMillis
+                  : undefined;
+              yield* Ref.update(workspaceEmptyScanTimesRef, (scans) =>
+                updateWorkspaceEmptyScanTime(scans, instance, input.cwd, scannedAt),
+              );
+              return yield* Ref.modify(providersRef, (currentProviders) => {
+                const nextProviders = currentProviders.map((candidate) =>
+                  candidate.instanceId === input.instanceId &&
+                  !hasCompleteWorkspaceSnapshot(candidate, input.cwd)
+                    ? upsertProviderWorkspaceSnapshot(candidate, input.cwd, scopedSnapshot)
+                    : candidate,
+                );
+                return [[currentProviders, nextProviders] as const, nextProviders];
+              }).pipe(
+                Effect.tap(([previousProviders, nextProviders]) =>
+                  haveProvidersChanged(previousProviders, nextProviders)
+                    ? PubSub.publish(changesPubSub, nextProviders)
+                    : Effect.void,
+                ),
+                Effect.map(([, nextProviders]) => nextProviders),
+              );
+            }),
+          ),
+        );
+      }).pipe(
         Effect.ensuring(
           Ref.update(workspaceRefreshesRef, (refreshes) => {
             const next = new Map(refreshes);
