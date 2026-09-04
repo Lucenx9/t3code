@@ -1170,15 +1170,6 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             checkedAt: "2026-06-10T00:00:30.000Z",
             slashCommands: [{ name: "project" }],
             skills: [],
-            workspaceSnapshots: [
-              {
-                cwd: "/workspace",
-                checkedAt: "2026-06-10T00:00:30.000Z",
-                slashCommands: [{ name: "project" }],
-                skills: [],
-                skillsDiscoveryPending: true,
-              },
-            ],
           } as const satisfies ServerProvider;
           const snapshotCalls = yield* Ref.make(0);
           const snapshotResult = yield* Ref.make<Effect.Effect<ServerProvider>>(
@@ -1265,10 +1256,13 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             assert.strictEqual((yield* registry.getProviders)[0]?.workspaceSnapshots, undefined);
             yield* Ref.set(snapshotResult, Effect.succeed(emptyScopedProvider));
             yield* registry.refreshWorkspaceSnapshot({ instanceId, cwd: "/workspace" });
-            assert.deepStrictEqual(
-              (yield* registry.getProviders)[0]?.workspaceSnapshots?.[0],
-              emptyScopedProvider.workspaceSnapshots[0],
-            );
+            assert.deepStrictEqual((yield* registry.getProviders)[0]?.workspaceSnapshots?.[0], {
+              cwd: "/workspace",
+              checkedAt: emptyScopedProvider.checkedAt,
+              slashCommands: emptyScopedProvider.slashCommands,
+              skills: [],
+              skillsDiscoveryPending: true,
+            });
             assert.strictEqual(yield* Ref.get(snapshotCalls), 2);
             yield* registry.refreshWorkspaceSnapshot({ instanceId, cwd: "/workspace" });
             assert.strictEqual(yield* Ref.get(snapshotCalls), 2);

@@ -110,22 +110,29 @@ const shouldCacheWorkspaceSnapshot = (snapshot: ServerProvider, cwd: string): bo
   (snapshot.workspaceSnapshots === undefined ||
     snapshot.workspaceSnapshots.some((entry) => entry.cwd === cwd));
 
+const getWorkspaceSkillsDiscoveryPending = (
+  snapshot: ServerProvider,
+  cwd: string,
+): boolean | undefined => {
+  const workspaceSnapshot = snapshot.workspaceSnapshots?.find((entry) => entry.cwd === cwd);
+  if (workspaceSnapshot?.skillsDiscoveryPending !== undefined) {
+    return workspaceSnapshot.skillsDiscoveryPending;
+  }
+  return workspaceSnapshot === undefined && snapshot.skills.length === 0 ? true : undefined;
+};
+
 export function upsertProviderWorkspaceSnapshot(
   provider: ServerProvider,
   cwd: string,
   scopedSnapshot: ServerProvider,
 ): ServerProvider {
-  const scopedWorkspaceSnapshot = scopedSnapshot.workspaceSnapshots?.find(
-    (snapshot) => snapshot.cwd === cwd,
-  );
+  const skillsDiscoveryPending = getWorkspaceSkillsDiscoveryPending(scopedSnapshot, cwd);
   const workspaceSnapshot = {
     cwd,
     checkedAt: scopedSnapshot.checkedAt,
     slashCommands: scopedSnapshot.slashCommands,
     skills: scopedSnapshot.skills,
-    ...(scopedWorkspaceSnapshot?.skillsDiscoveryPending !== undefined
-      ? { skillsDiscoveryPending: scopedWorkspaceSnapshot.skillsDiscoveryPending }
-      : {}),
+    ...(skillsDiscoveryPending !== undefined ? { skillsDiscoveryPending } : {}),
   } satisfies NonNullable<ServerProvider["workspaceSnapshots"]>[number];
   return {
     ...provider,
@@ -839,13 +846,12 @@ export const ProviderRegistryLive = Layer.effect(
               }
               const currentInstance = yield* instanceRegistry.getInstance(input.instanceId);
               if (currentInstance !== instance) return yield* Ref.get(providersRef);
-              const workspaceSnapshot = scopedSnapshot.workspaceSnapshots?.find(
-                (snapshot) => snapshot.cwd === input.cwd,
+              const skillsDiscoveryPending = getWorkspaceSkillsDiscoveryPending(
+                scopedSnapshot,
+                input.cwd,
               );
               const scannedAt =
-                workspaceSnapshot?.skillsDiscoveryPending === true
-                  ? yield* Clock.currentTimeMillis
-                  : undefined;
+                skillsDiscoveryPending === true ? yield* Clock.currentTimeMillis : undefined;
               yield* Ref.update(workspaceEmptyScanTimesRef, (scans) =>
                 updateWorkspaceEmptyScanTime(scans, instance, input.cwd, scannedAt),
               );
