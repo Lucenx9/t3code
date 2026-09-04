@@ -5,6 +5,21 @@ import remarkParse from "remark-parse";
 import remarkRehype from "remark-rehype";
 import { unified } from "unified";
 
+import {
+  codexArtifactTemplatePresentationLabel,
+  type CodexArtifactTemplate,
+} from "./codexArtifactTemplates.ts";
+import { remarkCodexDirectives } from "./codexMarkdownDirectives.ts";
+import { formatWorkspaceRelativePath } from "./filePathDisplay.ts";
+import {
+  buildFileLinkParentSuffixByPath,
+  fileBasename,
+  inlineCodeFilePathCandidate,
+  parseMarkdownFileLink,
+  type FilePathPosition,
+} from "./markdownLinks.ts";
+import { remarkGithubAlerts } from "./markdownGithubAlerts.ts";
+
 type ThreadFindHtmlNode = {
   readonly type: string;
   readonly value?: string;
@@ -12,13 +27,105 @@ type ThreadFindHtmlNode = {
   readonly children?: ReadonlyArray<ThreadFindHtmlNode>;
 };
 
-const parser = unified()
-  .use(remarkParse)
-  .use(remarkGfm)
-  .use(remarkRehype, { allowDangerousHtml: true })
-  .use(rehypeRaw)
-  .use(rehypeSanitize)
-  .freeze();
+type ThreadFindMarkdownNode = {
+  type: string;
+  value?: string;
+  url?: string;
+  data?: {
+    codexArtifactTemplate?: CodexArtifactTemplate;
+    hProperties?: Record<string, unknown>;
+  };
+  children?: ThreadFindMarkdownNode[];
+};
+
+type ThreadFindFileNode = {
+  readonly node: ThreadFindMarkdownNode;
+  readonly position: FilePathPosition;
+  readonly path: string;
+};
+
+function threadFindFilePosition(node: ThreadFindMarkdownNode): FilePathPosition | null {
+  if (node.type === "link") return node.url ? parseMarkdownFileLink(node.url) : null;
+  if (node.type !== "inlineCode") return null;
+  const candidate = inlineCodeFilePathCandidate(node.value ?? "");
+  return candidate === null ? null : parseMarkdownFileLink(candidate);
+}
+
+function threadFindFileLabel(
+  file: ThreadFindFileNode,
+  suffixByPath: ReadonlyMap<string, string>,
+): string {
+  const parts = [fileBasename(file.position.path)];
+  const parentSuffix = suffixByPath.get(file.path);
+  if (parentSuffix) parts.push(parentSuffix);
+  if (file.position.line) {
+    parts.push(`L${file.position.line}${file.position.column ? `:C${file.position.column}` : ""}`);
+  }
+  return parts.join(" · ");
+}
+
+function remarkThreadFindPresentation() {
+  return (tree: unknown) => {
+    const fileNodes: ThreadFindFileNode[] = [];
+    const visit = (node: ThreadFindMarkdownNode) => {
+      const template = node.data?.codexArtifactTemplate;
+      if (template) {
+        node.children = [
+          {
+            type: "text",
+            value: `${template.displayName} ${codexArtifactTemplatePresentationLabel(template.artifactKind)}`,
+          },
+        ];
+        delete node.data;
+      }
+
+      const alertKind = node.data?.hProperties?.dataAlert;
+      if (node.type === "blockquote" && typeof alertKind === "string") {
+        const label = `${alertKind.slice(0, 1).toUpperCase()}${alertKind.slice(1).toLowerCase()}`;
+        node.children = [
+          { type: "paragraph", children: [{ type: "text", value: label }] },
+          ...(node.children ?? []),
+        ];
+      }
+
+      const position = threadFindFilePosition(node);
+      if (position) {
+        fileNodes.push({
+          node,
+          position,
+          path: position.path.replaceAll("\\", "/"),
+        });
+      }
+      for (const child of node.children ?? []) visit(child);
+    };
+    visit(tree as ThreadFindMarkdownNode);
+
+    const suffixByPath = buildFileLinkParentSuffixByPath(fileNodes.map(({ path }) => path));
+    for (const file of fileNodes) {
+      const label = threadFindFileLabel(file, suffixByPath);
+      if (file.node.type === "link") {
+        file.node.children = [{ type: "text", value: label }];
+      } else {
+        file.node.value = label;
+      }
+    }
+  };
+}
+
+function createThreadFindParser(parseRawHtml: boolean) {
+  const processor = unified()
+    .use(remarkParse)
+    .use(remarkGfm)
+    .use(remarkGithubAlerts)
+    .use(remarkCodexDirectives)
+    .use(remarkThreadFindPresentation)
+    .use(remarkRehype, { allowDangerousHtml: true });
+  if (parseRawHtml) processor.use(rehypeRaw).use(rehypeSanitize);
+  return processor.freeze();
+}
+
+const userParser = createThreadFindParser(false);
+const assistantParser = createThreadFindParser(true);
 const BLOCK_TAG_NAMES = new Set([
   "address",
   "article",
@@ -57,6 +164,81 @@ const BLOCK_TAG_NAMES = new Set([
 const TRAILING_USER_CONTEXT =
   /\n*<(terminal_context|element_context|preview_annotation)>\n([\s\S]*?)\n<\/\1>\s*$/u;
 const TERMINAL_CONTEXT_HEADER = /^(.*?)\s+line(?:s)?\s+(\d+)(?:-(\d+))?$/iu;
+const REVIEW_COMMENT_BLOCK_PATTERN = /<review_comment\b([^>]*)>\s*([\s\S]*?)<\/review_comment>/giu;
+const REVIEW_COMMENT_ATTRIBUTE_PATTERN = /([a-zA-Z][a-zA-Z0-9_-]*)="([^"]*)"/gu;
+const REVIEW_COMMENT_FENCE_PATTERN = /(`{3,})([^\s`]*)[^\n]*\n([\s\S]*?)\n\1/gu;
+const MARKDOWN_ESCAPABLE_CHARACTERS = new Set("\\!\"#$%&'()*+,-./:;<=>?@[]^_`{|}~".split(""));
+
+export interface ThreadFindMessageOptions {
+  readonly workspaceRoot?: string | undefined;
+}
+
+function unescapeReviewCommentAttribute(value: string): string {
+  return value
+    .replace(/&lt;/gu, "<")
+    .replace(/&gt;/gu, ">")
+    .replace(/&quot;/gu, '"')
+    .replace(/&amp;/gu, "&");
+}
+
+function readReviewCommentAttributes(rawAttributes: string): Record<string, string> {
+  const attributes: Record<string, string> = {};
+  for (const match of rawAttributes.matchAll(REVIEW_COMMENT_ATTRIBUTE_PATTERN)) {
+    const name = match[1];
+    if (name) attributes[name] = unescapeReviewCommentAttribute(match[2] ?? "");
+  }
+  return attributes;
+}
+
+function readNonNegativeInteger(value: string | undefined): number | null {
+  return value !== undefined && /^\d+$/u.test(value) ? Number(value) : null;
+}
+
+function markdownPlainText(value: string): string {
+  return Array.from(value, (character) =>
+    MARKDOWN_ESCAPABLE_CHARACTERS.has(character) ? `\\${character}` : character,
+  ).join("");
+}
+
+function fencedReviewCommentText(language: string, contents: string): string {
+  const longestBacktickRun = Math.max(
+    0,
+    ...Array.from(contents.matchAll(/`+/gu), (match) => match[0].length),
+  );
+  const fence = "`".repeat(Math.max(3, longestBacktickRun + 1));
+  return [`${fence}${language}`, contents.trimEnd(), fence].join("\n");
+}
+
+function projectReviewCommentCards(prompt: string, workspaceRoot?: string): string {
+  return prompt.replace(
+    REVIEW_COMMENT_BLOCK_PATTERN,
+    (source, rawAttributes: string, rawBody: string) => {
+      const attributes = readReviewCommentAttributes(rawAttributes);
+      const filePath = attributes.filePath?.trim();
+      const sectionId = attributes.sectionId?.trim();
+      const startIndex = readNonNegativeInteger(attributes.startIndex);
+      const endIndex = readNonNegativeInteger(attributes.endIndex);
+      if (!filePath || !sectionId || startIndex === null || endIndex === null) return source;
+
+      const fenceMatches = Array.from(rawBody.matchAll(REVIEW_COMMENT_FENCE_PATTERN));
+      const fenceMatch = fenceMatches.at(-1);
+      const fenceIndex = fenceMatch?.index;
+      const comment = rawBody.slice(0, fenceIndex ?? rawBody.length).trim();
+      const language = fenceMatch?.[2]?.trim() || "diff";
+      const contents = fenceMatch?.[3] ?? "";
+      const path = formatWorkspaceRelativePath(filePath, workspaceRoot);
+      const heading = `${attributes.sectionTitle?.trim() || "Review"} · ${
+        attributes.rangeLabel?.trim() || "line"
+      }`;
+      return [
+        markdownPlainText(path),
+        markdownPlainText(heading),
+        ...(comment.length > 0 ? [markdownPlainText(comment)] : []),
+        ...(contents.trim().length > 0 ? [fencedReviewCommentText(language, contents)] : []),
+      ].join("\n\n");
+    },
+  );
+}
 
 function formatTerminalContextLabel(header: string): string {
   const trimmed = header.trim();
@@ -101,7 +283,11 @@ function visibleContextSummary(kind: string, body: string): string {
 }
 
 /** Mirrors the transcript's removal/condensing of composer-only context blocks. */
-export function threadFindMessageMarkdown(role: "user" | "assistant", text: string): string {
+export function threadFindMessageMarkdown(
+  role: "user" | "assistant",
+  text: string,
+  options: ThreadFindMessageOptions = {},
+): string {
   if (role === "assistant") return text;
   let prompt = text;
   const summaries: Array<{ readonly kind: string; readonly text: string }> = [];
@@ -113,15 +299,13 @@ export function threadFindMessageMarkdown(role: "user" | "assistant", text: stri
     if (summary.length > 0) summaries.unshift({ kind, text: summary });
     prompt = prompt.slice(0, match.index).replace(/\n+$/u, "");
   }
-  // Review comments are rendered as cards. Their attributes are metadata, but
-  // the comment and diff between the tags are visible transcript content.
-  const withoutReviewTags = prompt.replace(/<\/?review_comment\b[^>]*>/giu, "");
+  const visiblePrompt = projectReviewCommentCards(prompt, options.workspaceRoot);
   const terminalLabels = summaries
     .filter(({ kind }) => kind === "terminal_context")
     .flatMap(({ text: summary }) => summary.split("\n").filter(Boolean));
   let terminalSearchStart = 0;
   const hasEmbeddedTerminalLabels = terminalLabels.every((label) => {
-    const index = withoutReviewTags.indexOf(label, terminalSearchStart);
+    const index = visiblePrompt.indexOf(label, terminalSearchStart);
     if (index < 0) return false;
     terminalSearchStart = index + label.length;
     return true;
@@ -133,14 +317,14 @@ export function threadFindMessageMarkdown(role: "user" | "assistant", text: stri
       ? []
       : summaries.filter(({ kind }) => kind === "terminal_context")),
   ].map(({ text: summary }) => summary);
-  return [...visibleSummaries, withoutReviewTags].filter((part) => part.length > 0).join("\n\n");
+  return [...visibleSummaries, visiblePrompt].filter((part) => part.length > 0).join("\n\n");
 }
 
 function appendHtmlText(node: ThreadFindHtmlNode, parts: string[]): void {
   const block = node.type === "root" || BLOCK_TAG_NAMES.has(node.tagName ?? "");
   if (block) parts.push("\n");
 
-  if (node.type === "text") {
+  if (node.type === "text" || node.type === "raw") {
     parts.push(node.value ?? "");
   } else if (node.tagName === "br") {
     parts.push("\n");
@@ -152,9 +336,15 @@ function appendHtmlText(node: ThreadFindHtmlNode, parts: string[]): void {
 }
 
 /** Text users can actually find in rendered message bodies, with layout whitespace collapsed. */
-export function threadFindVisibleText(role: "user" | "assistant", text: string): string {
-  const markdownRoot = parser.parse(threadFindMessageMarkdown(role, text));
-  const root = parser.runSync(markdownRoot) as ThreadFindHtmlNode;
+export function threadFindVisibleText(
+  role: "user" | "assistant",
+  text: string,
+  options: ThreadFindMessageOptions = {},
+): string {
+  const markdown = threadFindMessageMarkdown(role, text, options);
+  const parser = role === "user" ? userParser : assistantParser;
+  const markdownRoot = parser.parse(markdown);
+  const root = parser.runSync(markdownRoot, { value: markdown }) as ThreadFindHtmlNode;
   const parts: string[] = [];
   appendHtmlText(root, parts);
   return parts.join("").replace(/\s+/gu, " ").trim();

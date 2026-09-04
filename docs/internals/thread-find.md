@@ -20,8 +20,10 @@ the selected thread. [`threadFind.ts`][text] converts Markdown to rendered text,
 composer-only context blocks, collapses layout whitespace, and counts case-insensitive,
 non-overlapping matches. No index or backfill is required. If profiling shows that parsing a single
 large thread is material, a derived searchable-text projection can be added behind the same RPC.
-Repeated queries reuse a 2,000-entry in-process LRU keyed by message revision; the bound prevents a
-long-running remote server from retaining every message it has ever searched.
+Repeated queries reuse complete derived projections keyed by thread revision. The in-process LRU is
+bounded to four threads and 16 million UTF-16 characters, so a thread larger than the old
+per-message cache does not churn on every query while a long-running remote server still has a
+fixed memory ceiling.
 
 [`ThreadFindBar`][bar] owns the query, selected ordinal, bounded result window, and stale-revision
 restart. [`useThreadFindTarget`][target] uses the existing adjacent history cursor until the selected

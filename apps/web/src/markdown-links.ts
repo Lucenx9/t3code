@@ -1,4 +1,5 @@
 import {
+  buildFileLinkParentSuffixByPath,
   fileBasename,
   formatFilePathPosition,
   inlineCodeFilePathCandidate,
@@ -14,7 +15,7 @@ import {
 import { formatWorkspaceRelativePath } from "./filePathDisplay";
 import { isTerminalLinkActivation, resolvePathLinkTarget } from "./terminal-links";
 
-export { normalizeMarkdownLinkDestination };
+export { buildFileLinkParentSuffixByPath, normalizeMarkdownLinkDestination };
 
 const MARKDOWN_LINK_HREF_PATTERN =
   /\[[^\]]*]\(\s*(?:<([^>\n]+)>|([^\s)]+))(?:\s+["'][^"']*["'])?\s*\)/g;

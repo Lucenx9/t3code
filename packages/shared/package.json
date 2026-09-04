@@ -179,6 +179,30 @@
       "types": "./src/threadFind.ts",
       "import": "./src/threadFind.ts"
     },
+    "./markdownLinks": {
+      "types": "./src/markdownLinks.ts",
+      "import": "./src/markdownLinks.ts"
+    },
+    "./filePathDisplay": {
+      "types": "./src/filePathDisplay.ts",
+      "import": "./src/filePathDisplay.ts"
+    },
+    "./markdownGithubAlerts": {
+      "types": "./src/markdownGithubAlerts.ts",
+      "import": "./src/markdownGithubAlerts.ts"
+    },
+    "./codexArtifactTemplates": {
+      "types": "./src/codexArtifactTemplates.ts",
+      "import": "./src/codexArtifactTemplates.ts"
+    },
+    "./codexFileCitations": {
+      "types": "./src/codexFileCitations.ts",
+      "import": "./src/codexFileCitations.ts"
+    },
+    "./codexMarkdownDirectives": {
+      "types": "./src/codexMarkdownDirectives.ts",
+      "import": "./src/codexMarkdownDirectives.ts"
+    },
     "./composerTrigger": {
       "types": "./src/composerTrigger.ts",
       "import": "./src/composerTrigger.ts"
@@ -274,6 +298,9 @@
     "@t3tools/contracts": "workspace:*",
     "effect": "catalog:",
     "jose": "catalog:",
+    "mdast-util-directive": "^3.1.0",
+    "micromark-extension-directive": "^4.0.0",
+    "micromark-util-character": "^2.1.1",
     "rehype-raw": "^7.0.0",
     "rehype-sanitize": "^6.0.0",
     "remark-gfm": "^4.0.1",
@@ -286,6 +313,7 @@
     "@effect/platform-node": "catalog:",
     "@effect/vitest": "catalog:",
     "@types/node": "catalog:",
+    "micromark-util-types": "^2.0.2",
     "vite-plus": "catalog:"
   }
 }

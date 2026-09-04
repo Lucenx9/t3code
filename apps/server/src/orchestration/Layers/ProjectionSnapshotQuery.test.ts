@@ -1895,6 +1895,16 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
             '2026-05-01T00:00:15.000Z'
           ),
           (
+            'message-review',
+            'thread-active',
+            NULL,
+            'user',
+            '<review_comment sectionId="file:src/app.ts" sectionTitle="File comment" filePath="/tmp/project-search/src/app.ts" startIndex="0" endIndex="1" rangeLabel="L1 to L2">Please adjust this.</review_comment>',
+            0,
+            '2026-05-01T00:00:15.500Z',
+            '2026-05-01T00:00:15.500Z'
+          ),
+          (
             'message-hidden',
             'thread-hidden',
             NULL,
@@ -1968,6 +1978,13 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           query: "hidden needle",
         })).total,
         0,
+      );
+      assert.equal(
+        (yield* snapshotQuery.findThread({
+          threadId: ThreadId.make("thread-active"),
+          query: "project-search/src/app.ts",
+        })).total,
+        1,
       );
 
       const firstThreadMatch = yield* snapshotQuery.findThread({

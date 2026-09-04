@@ -10,6 +10,18 @@ import type { ThreadFindRequest } from "./ThreadFindSource";
 import { nextThreadFindIndex, threadFindPageStart } from "./ThreadFindBar.logic";
 
 const QUERY_DEBOUNCE_MS = 120;
+const ESCAPE_BLOCKING_LAYER_SELECTOR = [
+  '[role="dialog"][aria-modal="true"]',
+  '[data-slot="alert-dialog-popup"]:is([data-open],[data-ending-style])',
+  '[data-slot="command-dialog-popup"]:is([data-open],[data-ending-style])',
+  '[data-slot="dialog-popup"]:is([data-open],[data-ending-style])',
+  '[data-slot="sheet-popup"]:is([data-open],[data-ending-style])',
+  '[data-slot="menu-popup"]',
+  '[data-slot="select-popup"]',
+  '[data-slot="popover-popup"]',
+  '[data-slot="combobox-popup"]',
+  '[data-slot="autocomplete-popup"]',
+].join(",");
 
 export function ThreadFindBar({
   environmentId,
@@ -39,6 +51,17 @@ export function ThreadFindBar({
     });
     return () => window.cancelAnimationFrame(frame);
   }, [focusRequestId]);
+
+  useEffect(() => {
+    const onEscapeKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.isComposing || event.key !== "Escape" || event.defaultPrevented) return;
+      if (document.querySelector(ESCAPE_BLOCKING_LAYER_SELECTOR)) return;
+      event.preventDefault();
+      onClose();
+    };
+    window.addEventListener("keydown", onEscapeKeyDown);
+    return () => window.removeEventListener("keydown", onEscapeKeyDown);
+  }, [onClose]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => setSettledQuery(query.trim()), QUERY_DEBOUNCE_MS);
@@ -120,14 +143,12 @@ export function ThreadFindBar({
         onClose();
       }}
     >
-      <InputGroup
-        variant="ghost"
-        className="h-7 min-w-0 flex-1 border-0 bg-transparent shadow-none hover:bg-transparent has-[input:focus-visible]:bg-transparent has-[input:focus-visible]:ring-0 sm:w-56 sm:flex-none **:[input]:h-7 **:[input]:px-1 **:[input]:text-sm **:[input]:leading-7"
-      >
+      <InputGroup variant="ghost" className="h-7 min-w-0 flex-1 sm:w-56 sm:flex-none">
         <InputGroupAddon className="ps-1 pe-0">
           <SearchIcon className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
         </InputGroupAddon>
         <InputGroupInput
+          size="sm"
           ref={inputRef}
           type="search"
           value={query}

@@ -30,6 +30,53 @@ describe("threadFindVisibleText", () => {
     );
   });
 
+  it("keeps raw HTML literal in user messages", () => {
+    expect(threadFindVisibleText("user", "<Widget>hello</Widget>")).toBe("<Widget>hello</Widget>");
+  });
+
+  it("projects local file links and inline paths as their rendered chip labels", () => {
+    expect(
+      threadFindVisibleText(
+        "assistant",
+        "[Open source](/workspace/src/main.ts) and `/workspace/src/worker.ts:12`",
+      ),
+    ).toBe("main.ts and worker.ts · L12");
+    expect(
+      threadFindVisibleText("assistant", "[first](src/alpha/main.ts) [second](src/beta/main.ts)"),
+    ).toBe("main.ts · src/alpha main.ts · src/beta");
+  });
+
+  it("projects Codex directives and GitHub alerts like the transcript", () => {
+    const fileCitation = ':codex-file-citation{path="outputs/report.xlsx" purpose="output"}';
+    const template =
+      '::artifact-template{skill_name="artifact-template-hello-world" skill_directory="/Users/test/.codex/skills/artifact-template-hello-world" display_name="Hello World" artifact_kind="document"}';
+
+    expect(threadFindVisibleText("assistant", `Created ${fileCitation}.\n\n${template}`)).toBe(
+      "Created report.xlsx. Hello World Document template",
+    );
+    expect(threadFindVisibleText("assistant", "> [!NOTE]\n> Keep this visible.")).toBe(
+      "Note Keep this visible.",
+    );
+  });
+
+  it("includes the visible metadata and body of review-comment cards", () => {
+    const prompt = [
+      "Before",
+      '<review_comment sectionId="turn:2" sectionTitle="Turn 2" filePath="/workspace/src/app.ts" startIndex="3" endIndex="4" rangeLabel="+47 to +48">',
+      "Please fix *this*.",
+      "```diff",
+      "-old",
+      "+new",
+      "```",
+      "</review_comment>",
+      "After",
+    ].join("\n");
+
+    expect(threadFindVisibleText("user", prompt, { workspaceRoot: "/workspace" })).toBe(
+      "Before workspace/src/app.ts Turn 2 · +47 to +48 Please fix *this*. -old +new After",
+    );
+  });
+
   it("reduces terminal payloads to their visible chip labels and retains element labels", () => {
     const prompt = [
       "Please fix the button",

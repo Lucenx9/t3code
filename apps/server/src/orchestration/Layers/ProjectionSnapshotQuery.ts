@@ -162,6 +162,7 @@ const ProjectionThreadFindRow = Schema.Struct({
   turnId: Schema.NullOr(TurnId),
   source: OrchestrationThreadSearchSource,
   text: Schema.String,
+  workspaceRoot: Schema.String,
   updatedAt: IsoDateTime,
 });
 const WorkspaceRootLookupInput = Schema.Struct({
@@ -423,7 +424,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
   const threadFindRevision = (rows: ReadonlyArray<ThreadFindRow>) => {
     let revisionHash = 2_166_136_261;
     for (const row of rows) {
-      const revisionPart = `${row.messageId}\0${row.turnId ?? ""}\0${row.source}\0${row.updatedAt}`;
+      const revisionPart = `${row.messageId}\0${row.turnId ?? ""}\0${row.source}\0${row.workspaceRoot}\0${row.updatedAt}`;
       for (let index = 0; index < revisionPart.length; index += 1) {
         revisionHash = Math.imul(revisionHash ^ revisionPart.charCodeAt(index), 16_777_619);
       }
@@ -445,7 +446,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       threadFindTextCache.delete(threadId);
       threadFindTextCacheCharacterCount -= cached.characterCount;
     }
-    const texts = rows.map((row) => threadFindVisibleText(row.source, row.text));
+    const texts = rows.map((row) =>
+      threadFindVisibleText(row.source, row.text, { workspaceRoot: row.workspaceRoot }),
+    );
     const characterCount = texts.reduce((sum, text) => sum + text.length, 0);
     if (characterCount > THREAD_FIND_TEXT_CACHE_MAX_CHARACTERS) return texts;
 
@@ -986,6 +989,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             ELSE 'assistant'
           END AS source,
           messages.text,
+          COALESCE(threads.worktree_path, projects.workspace_root) AS "workspaceRoot",
           messages.updated_at AS "updatedAt"
         FROM projection_thread_messages AS messages
         INNER JOIN projection_threads AS threads
