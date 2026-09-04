@@ -808,7 +808,9 @@ export const ProviderRegistryLive = Layer.effect(
         return providers;
       }
       const instance = yield* instanceRegistry.getInstance(input.instanceId);
-      if (!instance?.snapshotForCwd) return providers;
+      if (!instance) return providers;
+      const snapshotForCwd = instance.snapshotForCwd;
+      if (!snapshotForCwd) return providers;
       const claimed = yield* Ref.modify(workspaceRefreshesRef, (refreshes) => {
         const current = refreshes.get(instance);
         if (current?.has(input.cwd)) return [false, refreshes] as const;
@@ -829,7 +831,7 @@ export const ProviderRegistryLive = Layer.effect(
         ) {
           return yield* Ref.get(providersRef);
         }
-        return yield* instance.snapshotForCwd(input.cwd).pipe(
+        return yield* snapshotForCwd(input.cwd).pipe(
           Effect.flatMap((scopedSnapshot) =>
             Effect.gen(function* () {
               if (!shouldCacheWorkspaceSnapshot(scopedSnapshot, input.cwd)) {
