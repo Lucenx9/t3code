@@ -1962,6 +1962,77 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         (yield* snapshotQuery.searchThreads({ query: "hidden needle" })).matches,
         [],
       );
+
+      const firstThreadMatch = yield* snapshotQuery.findThread({
+        threadId: ThreadId.make("thread-active"),
+        query: "needle",
+        limit: 1,
+      });
+      assert.equal(firstThreadMatch.total, 2);
+      assert.equal(firstThreadMatch.startIndex, 0);
+      assert.deepStrictEqual(firstThreadMatch.matches, [
+        {
+          messageId: MessageId.make("message-user"),
+          turnId: TurnId.make("turn-active"),
+          source: "user",
+          occurrenceIndex: 0,
+        },
+      ]);
+
+      const secondThreadMatch = yield* snapshotQuery.findThread({
+        threadId: ThreadId.make("thread-active"),
+        query: "NEEDLE",
+        startIndex: 1,
+        limit: 1,
+      });
+      assert.equal(secondThreadMatch.total, 2);
+      assert.deepStrictEqual(secondThreadMatch.matches, [
+        {
+          messageId: MessageId.make("message-final"),
+          turnId: TurnId.make("turn-active"),
+          source: "assistant",
+          occurrenceIndex: 0,
+        },
+      ]);
+
+      const repeatedNeedles = Array.from({ length: 120 }, () => "needle").join(" ");
+      yield* sql`
+        UPDATE projection_thread_messages
+        SET
+          text = ${repeatedNeedles},
+          updated_at = '2026-05-01T00:00:19.000Z'
+        WHERE message_id = 'message-final'
+      `;
+      const boundedThreadMatches = yield* snapshotQuery.findThread({
+        threadId: ThreadId.make("thread-active"),
+        query: "needle",
+      });
+      assert.equal(boundedThreadMatches.total, 121);
+      assert.equal(boundedThreadMatches.matches.length, 100);
+      assert.notEqual(boundedThreadMatches.revision, firstThreadMatch.revision);
+
+      const lastThreadMatch = yield* snapshotQuery.findThread({
+        threadId: ThreadId.make("thread-active"),
+        query: "needle",
+        startIndex: 120,
+      });
+      assert.equal(lastThreadMatch.startIndex, 120);
+      assert.deepStrictEqual(lastThreadMatch.matches, [
+        {
+          messageId: MessageId.make("message-final"),
+          turnId: TurnId.make("turn-active"),
+          source: "assistant",
+          occurrenceIndex: 119,
+        },
+      ]);
+      assert.equal(
+        (yield* snapshotQuery.findThread({
+          threadId: ThreadId.make("thread-active"),
+          query: "interim needle",
+        })).total,
+        0,
+      );
+
       yield* sql`
         UPDATE projection_threads
         SET deleted_at = '2026-05-01T00:00:20.000Z'
@@ -1970,6 +2041,13 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       assert.deepStrictEqual(
         (yield* snapshotQuery.searchThreads({ query: "user needle" })).matches,
         [],
+      );
+      assert.equal(
+        (yield* snapshotQuery.findThread({
+          threadId: ThreadId.make("thread-active"),
+          query: "needle",
+        })).total,
+        0,
       );
     }),
   );

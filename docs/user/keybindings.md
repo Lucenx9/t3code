@@ -62,6 +62,12 @@ shortcut the browser leaves alone, such as `alt+w`.
 request is available. Its default shortcut is `mod+shift+c`, and it does not replace terminal copy
 while the terminal has focus.
 
+`thread.find` searches user messages and final agent responses in the conversation you have open.
+Its default shortcut is `mod+f` (`Cmd+F` on macOS and `Ctrl+F` elsewhere). Press `Enter` or
+`Shift+Enter` to move between matches and `Escape` to close the find bar. T3 Code loads an older
+turn only when the selected match is outside the current history window. This command is available
+on web and desktop when the connected server advertises conversation search support.
+
 `thread.settle` settles the active thread or restores it when it is already settled. Its default
 shortcut is `mod+shift+s`, and it does not run while the terminal has focus.
 

@@ -28,7 +28,9 @@ import {
   ProjectId,
   ThreadLinkedPullRequest,
   ThreadId,
+  THREAD_FIND_RESULT_LIMIT,
 } from "@t3tools/contracts";
+import { countThreadFindOccurrences, threadFindVisibleText } from "@t3tools/shared/threadFind";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -82,6 +84,7 @@ const THREAD_DETAIL_ACTIVITY_LIMIT = 500;
 // Snapshot payloads are decoded and projected in small sequential batches so
 // one client read does not retain the raw payloads for the full activity window.
 const THREAD_DETAIL_ACTIVITY_PAYLOAD_BATCH_SIZE = 25;
+const THREAD_FIND_TEXT_CACHE_MAX_ENTRIES = 2_000;
 const ProjectionProjectDbRowSchema = ProjectionProject.mapFields(
   Struct.assign({
     defaultModelSelection: Schema.NullOr(Schema.fromJsonString(ModelSelection)),
@@ -152,6 +155,13 @@ const ProjectionThreadSearchRow = Schema.Struct({
   source: OrchestrationThreadSearchSource,
   matchText: Schema.String,
   messageCreatedAt: Schema.NullOr(IsoDateTime),
+});
+const ProjectionThreadFindRow = Schema.Struct({
+  messageId: MessageId,
+  turnId: Schema.NullOr(TurnId),
+  source: OrchestrationThreadSearchSource,
+  text: Schema.String,
+  updatedAt: IsoDateTime,
 });
 const WorkspaceRootLookupInput = Schema.Struct({
   workspaceRoot: Schema.String,
@@ -401,6 +411,23 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
   const threadPlanProgress = yield* ThreadPlanProgressService;
   const sql = yield* SqlClient.SqlClient;
   const repositoryIdentityResolver = yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
+  const threadFindTextCache = new Map<string, string>();
+  const resolveThreadFindText = (row: Schema.Schema.Type<typeof ProjectionThreadFindRow>) => {
+    const key = `${row.messageId}\0${row.source}\0${row.updatedAt}`;
+    const cached = threadFindTextCache.get(key);
+    if (cached !== undefined) {
+      threadFindTextCache.delete(key);
+      threadFindTextCache.set(key, cached);
+      return cached;
+    }
+    const visibleText = threadFindVisibleText(row.source, row.text);
+    threadFindTextCache.set(key, visibleText);
+    if (threadFindTextCache.size > THREAD_FIND_TEXT_CACHE_MAX_ENTRIES) {
+      const oldestKey = threadFindTextCache.keys().next().value;
+      if (oldestKey !== undefined) threadFindTextCache.delete(oldestKey);
+    }
+    return visibleText;
+  };
   const repositoryIdentityResolutionConcurrency = 4;
   const resolveRepositoryIdentitiesForProjects = Effect.fn(
     "ProjectionSnapshotQuery.resolveRepositoryIdentitiesForProjects",
@@ -908,6 +935,45 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           thread_updated_at DESC,
           thread_id ASC
         LIMIT ${limit}
+      `,
+  });
+
+  const listThreadFindRows = SqlSchema.findAll({
+    Request: ThreadIdLookupInput,
+    Result: ProjectionThreadFindRow,
+    execute: ({ threadId }) =>
+      sql`
+        SELECT
+          messages.message_id AS "messageId",
+          messages.turn_id AS "turnId",
+          CASE messages.role
+            WHEN 'user' THEN 'user'
+            ELSE 'assistant'
+          END AS source,
+          messages.text,
+          messages.updated_at AS "updatedAt"
+        FROM projection_thread_messages AS messages
+        INNER JOIN projection_threads AS threads
+          ON threads.thread_id = messages.thread_id
+        INNER JOIN projection_projects AS projects
+          ON projects.project_id = threads.project_id
+        WHERE messages.thread_id = ${threadId}
+          AND threads.deleted_at IS NULL
+          AND projects.deleted_at IS NULL
+          AND messages.is_streaming = 0
+          AND (
+            messages.role = 'user'
+            OR (
+              messages.role = 'assistant'
+              AND messages.message_id IN (
+                SELECT turns.assistant_message_id
+                FROM projection_turns AS turns
+                WHERE turns.thread_id = ${threadId}
+                  AND turns.assistant_message_id IS NOT NULL
+              )
+            )
+          )
+        ORDER BY messages.created_at ASC, messages.message_id ASC
       `,
   });
 
@@ -2557,6 +2623,58 @@ pending_approval_requests AS (
     };
   });
 
+  const findThread: ProjectionSnapshotQueryShape["findThread"] = Effect.fn(
+    "ProjectionSnapshotQuery.findThread",
+  )(function* (input) {
+    const rows = yield* listThreadFindRows({ threadId: input.threadId }).pipe(
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProjectionSnapshotQuery.findThread:query",
+          "ProjectionSnapshotQuery.findThread:decodeRows",
+        ),
+      ),
+    );
+    const counts = rows.map((row) =>
+      countThreadFindOccurrences(resolveThreadFindText(row), input.query),
+    );
+    const total = counts.reduce((sum, count) => sum + count, 0);
+    const limit = input.limit ?? THREAD_FIND_RESULT_LIMIT;
+    const startIndex = total === 0 ? 0 : Math.min(input.startIndex ?? 0, total - 1);
+    const matches = [];
+    let ordinal = 0;
+    for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
+      const row = rows[rowIndex]!;
+      const count = counts[rowIndex]!;
+      for (let occurrenceIndex = 0; occurrenceIndex < count; occurrenceIndex += 1) {
+        if (ordinal >= startIndex && matches.length < limit) {
+          matches.push({
+            messageId: row.messageId,
+            turnId: row.turnId,
+            source: row.source,
+            occurrenceIndex,
+          });
+        }
+        ordinal += 1;
+        if (matches.length >= limit) break;
+      }
+      if (matches.length >= limit) break;
+    }
+
+    let revisionHash = 2_166_136_261;
+    for (const row of rows) {
+      const revisionPart = `${row.messageId}\0${row.turnId ?? ""}\0${row.source}\0${row.updatedAt}`;
+      for (let index = 0; index < revisionPart.length; index += 1) {
+        revisionHash = Math.imul(revisionHash ^ revisionPart.charCodeAt(index), 16_777_619);
+      }
+    }
+    return {
+      revision: `${rows.length.toString(36)}-${(revisionHash >>> 0).toString(36)}`,
+      total,
+      startIndex,
+      matches,
+    };
+  });
+
   const getActiveProjectByWorkspaceRoot: ProjectionSnapshotQueryShape["getActiveProjectByWorkspaceRoot"] =
     (workspaceRoot) =>
       getActiveProjectRowByWorkspaceRoot({ workspaceRoot }).pipe(
@@ -3191,6 +3309,7 @@ pending_approval_requests AS (
     getShellSnapshot,
     getArchivedShellSnapshot,
     searchThreads,
+    findThread,
     getSnapshotSequence,
     getCounts,
     getEventReplayStats,

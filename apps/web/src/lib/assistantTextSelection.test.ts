@@ -15,6 +15,7 @@ import {
   captureAssistantTextSelection,
   createAssistantTextSelector,
   findAssistantCitationText,
+  resolveThreadFindRange,
 } from "./assistantTextSelection";
 
 function selector(
@@ -93,6 +94,31 @@ class SelectionNode {
   }
   closest(selector: string): SelectionNode | null {
     return this.matches(selector) ? this : (this.parentElement?.closest(selector) ?? null);
+  }
+
+  readonly ownerDocument = {
+    createRange: () => new ResolvedRange() as unknown as Range,
+  };
+}
+
+class ResolvedRange {
+  startContainer: SelectionNode | null = null;
+  startOffset = 0;
+  endContainer: SelectionNode | null = null;
+  endOffset = 0;
+
+  get collapsed() {
+    return this.startContainer === this.endContainer && this.startOffset === this.endOffset;
+  }
+
+  setStart(node: SelectionNode, offset: number) {
+    this.startContainer = node;
+    this.startOffset = offset;
+  }
+
+  setEnd(node: SelectionNode, offset: number) {
+    this.endContainer = node;
+    this.endOffset = offset;
   }
 }
 
@@ -332,6 +358,24 @@ describe("captureAssistantTextSelection", () => {
     expect(
       capture(new SelectionNode("MAIN"), nativeSelection([quote, 0], [quote, quote.length])),
     ).toBeNull();
+  });
+});
+
+describe("resolveThreadFindRange", () => {
+  it("finds a case-insensitive occurrence across rendered block text", () => {
+    const first = textNode("First find");
+    const second = textNode("FIND here");
+    const source = assistantSource(
+      new SelectionNode("P").append(first),
+      new SelectionNode("P").append(new SelectionNode("STRONG").append(second)),
+      new SelectionNode("BUTTON").append(textNode("find in control")),
+    );
+
+    const range = resolveThreadFindRange(source as unknown as HTMLElement, "find", 1);
+    expect(range?.startContainer).toBe(second);
+    expect(range?.startOffset).toBe(0);
+    expect(range?.endContainer).toBe(second);
+    expect(range?.endOffset).toBe(4);
   });
 });
 

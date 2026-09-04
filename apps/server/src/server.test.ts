@@ -950,6 +950,7 @@ const buildAppUnderTest = (options?: {
               updatedAt: "1970-01-01T00:00:00.000Z",
             }),
           searchThreads: () => Effect.succeed({ matches: [] }),
+          findThread: () => Effect.succeed({ revision: "0", total: 0, startIndex: 0, matches: [] }),
           getSnapshotSequence: () => Effect.succeed({ snapshotSequence: 0 }),
           getProjectShellById: () => Effect.succeed(Option.none()),
           getThreadShellById: () => Effect.succeed(Option.none()),
@@ -4471,6 +4472,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.isUndefined(response.shellRevealInFileManager);
       assert.isUndefined(response.shellRevealInFileManagerKind);
       assert.equal(response.threadResumeCompletionMarker, true);
+      assert.equal(response.threadFind, 1);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
@@ -7244,6 +7246,20 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
                   },
                 ],
               }),
+            findThread: () =>
+              Effect.succeed({
+                revision: "1-test",
+                total: 1,
+                startIndex: 0,
+                matches: [
+                  {
+                    messageId: MessageId.make("message-final"),
+                    turnId: TurnId.make("turn-1"),
+                    source: "assistant" as const,
+                    occurrenceIndex: 0,
+                  },
+                ],
+              }),
           },
           orchestrationEngine: {
             dispatch: () => Effect.succeed({ sequence: 7 }),
@@ -7318,6 +7334,28 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           messageCreatedAt: now,
         },
       ]);
+
+      const findResult = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.findThread]({
+            threadId: ThreadId.make("thread-1"),
+            query: "final response",
+          }),
+        ),
+      );
+      assert.deepEqual(findResult, {
+        revision: "1-test",
+        total: 1,
+        startIndex: 0,
+        matches: [
+          {
+            messageId: MessageId.make("message-final"),
+            turnId: TurnId.make("turn-1"),
+            source: "assistant",
+            occurrenceIndex: 0,
+          },
+        ],
+      });
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

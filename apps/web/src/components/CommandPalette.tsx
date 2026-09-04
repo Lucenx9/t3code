@@ -99,6 +99,7 @@ import {
   resolveProjectPathForDispatch,
 } from "../lib/projectPaths";
 import { onOpenCommandPalette } from "../commandPaletteBus";
+import { openThreadFind } from "../threadFindBus";
 import { isPreviewFocused } from "../lib/previewFocus";
 import { isTerminalFocused } from "../lib/terminalFocus";
 import { selectActiveRightPanel, useRightPanelStore } from "../rightPanelStore";
@@ -542,6 +543,9 @@ function CommandPaletteDialog(props: {
       data-palette-mode={props.mode}
       data-testid="command-palette"
       finalFocus={() => {
+        if (document.activeElement?.closest("[data-thread-find-bar]")) {
+          return false;
+        }
         composerHandleRef?.current?.focusAtEnd();
         return false;
       }}
@@ -721,6 +725,13 @@ function OpenCommandPaletteDialog(props: {
     () =>
       new Map(
         environments.map((environment) => [environment.environmentId, environment.label] as const),
+      ),
+    [environments],
+  );
+  const environmentConfigById = useMemo(
+    () =>
+      new Map(
+        environments.map((environment) => [environment.environmentId, environment.serverConfig]),
       ),
     [environments],
   );
@@ -1626,6 +1637,20 @@ function OpenCommandPaletteDialog(props: {
       icon: <LinkIcon className={ITEM_ICON_CLASS} />,
       shortcutCommand: "thread.copyReference",
       run: copyActiveThreadReference,
+    });
+  }
+
+  if (activeThread && environmentConfigById.get(activeThread.environmentId)?.threadFind === 1) {
+    actionItems.push({
+      kind: "action",
+      value: "action:find-in-conversation",
+      searchTerms: ["find", "search", "conversation", "thread", "messages"],
+      title: "Find in conversation",
+      icon: <TextSearchIcon className={ITEM_ICON_CLASS} />,
+      shortcutCommand: "thread.find",
+      run: async () => {
+        openThreadFind();
+      },
     });
   }
 

@@ -30,6 +30,7 @@ export const ORCHESTRATION_WS_METHODS = {
   getTurnDiff: "orchestration.getTurnDiff",
   getFullThreadDiff: "orchestration.getFullThreadDiff",
   searchThreads: "orchestration.searchThreads",
+  findThread: "orchestration.findThread",
   getArchivedShellSnapshot: "orchestration.getArchivedShellSnapshot",
   subscribeShell: "orchestration.subscribeShell",
   subscribeThread: "orchestration.subscribeThread",
@@ -1764,6 +1765,36 @@ export const OrchestrationSearchThreadsResult = Schema.Struct({
 });
 export type OrchestrationSearchThreadsResult = typeof OrchestrationSearchThreadsResult.Type;
 
+export const THREAD_FIND_RESULT_LIMIT = 100;
+
+export const OrchestrationFindThreadInput = Schema.Struct({
+  threadId: ThreadId,
+  query: TrimmedString.check(Schema.isMinLength(1), Schema.isMaxLength(200)),
+  startIndex: Schema.optionalKey(NonNegativeInt),
+  limit: Schema.optionalKey(
+    Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: THREAD_FIND_RESULT_LIMIT })),
+  ),
+});
+export type OrchestrationFindThreadInput = typeof OrchestrationFindThreadInput.Type;
+
+export const OrchestrationThreadFindMatch = Schema.Struct({
+  messageId: MessageId,
+  turnId: Schema.NullOr(TurnId),
+  source: OrchestrationThreadSearchSource,
+  occurrenceIndex: NonNegativeInt,
+});
+export type OrchestrationThreadFindMatch = typeof OrchestrationThreadFindMatch.Type;
+
+export const OrchestrationFindThreadResult = Schema.Struct({
+  revision: TrimmedNonEmptyString.check(Schema.isMaxLength(64)),
+  total: NonNegativeInt,
+  startIndex: NonNegativeInt,
+  matches: Schema.Array(OrchestrationThreadFindMatch).check(
+    Schema.isMaxLength(THREAD_FIND_RESULT_LIMIT),
+  ),
+});
+export type OrchestrationFindThreadResult = typeof OrchestrationFindThreadResult.Type;
+
 export const OrchestrationGetWorkflowScriptInput = Schema.Struct({
   threadId: ThreadId,
   /** Absolute path from the workflow's runHandles.scriptPath. The server
@@ -1833,6 +1864,10 @@ export const OrchestrationRpcSchemas = {
     input: OrchestrationSearchThreadsInput,
     output: OrchestrationSearchThreadsResult,
   },
+  findThread: {
+    input: OrchestrationFindThreadInput,
+    output: OrchestrationFindThreadResult,
+  },
   getArchivedShellSnapshot: {
     input: Schema.Struct({}),
     output: OrchestrationShellSnapshot,
@@ -1882,6 +1917,14 @@ export class OrchestrationGetFullThreadDiffError extends Schema.TaggedErrorClass
 
 export class OrchestrationSearchThreadsError extends Schema.TaggedErrorClass<OrchestrationSearchThreadsError>()(
   "OrchestrationSearchThreadsError",
+  {
+    message: TrimmedNonEmptyString,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {}
+
+export class OrchestrationFindThreadError extends Schema.TaggedErrorClass<OrchestrationFindThreadError>()(
+  "OrchestrationFindThreadError",
   {
     message: TrimmedNonEmptyString,
     cause: Schema.optional(Schema.Defect()),

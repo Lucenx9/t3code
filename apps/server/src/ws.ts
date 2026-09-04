@@ -30,6 +30,7 @@ import {
   type GitActionProgressEvent,
   type GitManagerServiceError,
   OrchestrationDispatchCommandError,
+  OrchestrationFindThreadError,
   type OrchestrationEvent,
   type OrchestrationShellStreamEvent,
   type OrchestrationShellStreamItem,
@@ -1262,6 +1263,7 @@ const makeWsRpcLayer = (
               }),
           threadResumeCompletionMarker: true,
           threadSnapshotPagination: true,
+          threadFind: 1 as const,
         };
       });
 
@@ -1395,6 +1397,20 @@ const makeWsRpcLayer = (
                 (cause) =>
                   new OrchestrationSearchThreadsError({
                     message: "Failed to search threads",
+                    cause,
+                  }),
+              ),
+            ),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        [ORCHESTRATION_WS_METHODS.findThread]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.findThread,
+            projectionSnapshotQuery.findThread(input).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationFindThreadError({
+                    message: "Failed to search this thread",
                     cause,
                   }),
               ),

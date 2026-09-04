@@ -13,6 +13,8 @@ import type {
   OrchestrationProject,
   OrchestrationProjectShell,
   OrchestrationReadModel,
+  OrchestrationFindThreadInput,
+  OrchestrationFindThreadResult,
   OrchestrationSearchThreadsInput,
   OrchestrationSearchThreadsResult,
   OrchestrationShellSnapshot,
@@ -126,6 +128,11 @@ export interface ProjectionSnapshotQueryShape {
   readonly searchThreads: (
     input: OrchestrationSearchThreadsInput,
   ) => Effect.Effect<OrchestrationSearchThreadsResult, ProjectionRepositoryError>;
+
+  /** Find visible user/assistant text inside one thread without hydrating it. */
+  readonly findThread: (
+    input: OrchestrationFindThreadInput,
+  ) => Effect.Effect<OrchestrationFindThreadResult, ProjectionRepositoryError>;
 
   /**
    * Read the latest projection snapshot sequence without hydrating read-model

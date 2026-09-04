@@ -1,4 +1,5 @@
 import { ASSISTANT_CITATION_CONTEXT_LENGTH, type AssistantCitation } from "@t3tools/contracts";
+import { findThreadFindOccurrence } from "@t3tools/shared/threadFind";
 
 export type AssistantTextSelector = {
   readonly text: string;
@@ -34,7 +35,7 @@ export function findAssistantCitationSourceAnchor(
 }
 
 const CONTROL_SELECTOR = "button, input, textarea, select, [role=button], [contenteditable]";
-const EXCLUDED_SELECTOR = `${CONTROL_SELECTOR}, [hidden], [aria-hidden=true], script, style, template, noscript, svg`;
+const EXCLUDED_SELECTOR = `${CONTROL_SELECTOR}, [data-thread-find-exclude], [hidden], [aria-hidden=true], script, style, template, noscript, svg`;
 const BLOCK_SELECTOR =
   "address, article, aside, blockquote, dd, div, dl, dt, figcaption, figure, footer, h1, h2, h3, h4, h5, h6, header, hr, li, main, nav, ol, p, pre, section, table, td, th, tr, ul";
 
@@ -137,7 +138,7 @@ type TextChunk = { node: Text; start: number; end: number };
  * reads, CSS-generated content, or soft-wrap line breaks enter the stream, so
  * reflow cannot move it.
  */
-function readAssistantText(root: HTMLElement) {
+export function readVisibleText(root: HTMLElement) {
   const parts: string[] = [];
   const chunks: TextChunk[] = [];
   let length = 0;
@@ -185,7 +186,7 @@ function isUsableRange(root: HTMLElement, range: Range): boolean {
   ) {
     return false;
   }
-  // Interior controls are allowed; readAssistantText omits them from the stream.
+  // Interior controls are allowed; readVisibleText omits them from the stream.
   return true;
 }
 
@@ -227,7 +228,7 @@ export function captureAssistantTextSelection(
   range.setEnd(last, last === range.endContainer ? range.endOffset : last.length);
   if (!isUsableRange(source, range)) return null;
 
-  const stream = readAssistantText(source);
+  const stream = readVisibleText(source);
   let rawStart: number | null = null;
   let rawEnd = 0;
   for (const chunk of stream.chunks) {
@@ -265,8 +266,31 @@ export function resolveAssistantCitationRange(
   selector: AssistantTextSelector,
 ): Range | null {
   if (excludedAncestor(root) !== null) return null;
-  const stream = readAssistantText(root);
+  const stream = readVisibleText(root);
   const match = findAssistantCitationText(stream.text, selector);
+  if (match === null) return null;
+
+  const start = rawTextOffset(stream.text, match.start);
+  const end = rawTextOffset(stream.text, match.end);
+  const first = stream.chunks.find((chunk) => chunk.end > start);
+  const last = stream.chunks.findLast((chunk) => chunk.start < end);
+  if (first === undefined || last === undefined) return null;
+
+  const range = root.ownerDocument.createRange();
+  range.setStart(first.node, Math.max(0, start - first.start));
+  range.setEnd(last.node, Math.min(last.node.length, end - last.start));
+  return isUsableRange(root, range) ? range : null;
+}
+
+/** Resolve one case-insensitive find occurrence in the rendered text stream. */
+export function resolveThreadFindRange(
+  root: HTMLElement,
+  query: string,
+  occurrenceIndex: number,
+): Range | null {
+  if (excludedAncestor(root) !== null) return null;
+  const stream = readVisibleText(root);
+  const match = findThreadFindOccurrence(normalizeWhitespace(stream.text), query, occurrenceIndex);
   if (match === null) return null;
 
   const start = rawTextOffset(stream.text, match.start);

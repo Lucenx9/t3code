@@ -143,6 +143,7 @@ import { useTheme } from "../hooks/useTheme";
 import { writeTextToClipboard } from "../hooks/useCopyToClipboard";
 import { useTurnDiffSummaries } from "../hooks/useTurnDiffSummaries";
 import { isCommandPaletteOpen } from "../commandPaletteBus";
+import { onOpenThreadFind } from "../threadFindBus";
 import { buildTemporaryWorktreeBranchName } from "@t3tools/shared/git";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY } from "../rightPanelLayout";
@@ -296,6 +297,8 @@ import { DraftHeroHeadline } from "./chat/DraftHeroHeadline";
 import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
 import { MessagesTimeline } from "./chat/MessagesTimeline";
+import { ThreadFindBar } from "./chat/ThreadFindBar";
+import type { ThreadFindRequest } from "./chat/ThreadFindSource";
 import type { AssistantCitationRequest } from "./chat/AssistantCitationSource";
 import { resolveTimelineIsAtEnd } from "./chat/MessagesTimeline.logic";
 import { resolveComposerTimelineInset } from "./composerFooterLayout";
@@ -2044,6 +2047,29 @@ function ChatViewContent(props: ChatViewProps) {
   ]);
   const activeEnvironment =
     activeThread == null ? null : (environmentById.get(activeThread.environmentId) ?? null);
+  const supportsThreadFind = isServerThread && activeEnvironment?.serverConfig?.threadFind === 1;
+  const [threadFindOpen, setThreadFindOpen] = useState(false);
+  const [threadFindFocusRequestId, setThreadFindFocusRequestId] = useState(0);
+  const [threadFindRequest, setThreadFindRequest] = useState<ThreadFindRequest | null>(null);
+  const openThreadFindBar = useCallback(() => {
+    if (!supportsThreadFind) return;
+    setThreadFindOpen(true);
+    setThreadFindFocusRequestId((value) => value + 1);
+  }, [supportsThreadFind]);
+  const closeThreadFindBar = useCallback(() => {
+    setThreadFindOpen(false);
+    setThreadFindRequest(null);
+  }, []);
+  useEffect(() => onOpenThreadFind(openThreadFindBar), [openThreadFindBar]);
+  useEffect(() => {
+    if (supportsThreadFind) return;
+    setThreadFindOpen(false);
+    setThreadFindRequest(null);
+  }, [supportsThreadFind]);
+  useEffect(() => {
+    setThreadFindOpen(false);
+    setThreadFindRequest(null);
+  }, [routeThreadKey]);
   const activeEnvironmentConnectionPhase = activeEnvironment?.connection.phase ?? "available";
   const activeEnvironmentUnavailable =
     activeEnvironment !== null && activeEnvironmentConnectionPhase !== "connected";
@@ -5772,6 +5798,14 @@ function ChatViewContent(props: ChatViewProps) {
         return;
       }
 
+      if (command === "thread.find") {
+        if (!supportsThreadFind) return;
+        event.preventDefault();
+        event.stopPropagation();
+        if (!event.repeat) openThreadFindBar();
+        return;
+      }
+
       if (command === "thread.settle") {
         event.preventDefault();
         event.stopPropagation();
@@ -5932,6 +5966,8 @@ function ChatViewContent(props: ChatViewProps) {
     activeThreadRef,
     activeThreadPinned,
     activeThreadSettled,
+    supportsThreadFind,
+    openThreadFindBar,
     terminalUiState.terminalOpen,
     terminalUiState.activeTerminalId,
     activeThreadId,
@@ -7777,7 +7813,8 @@ function ChatViewContent(props: ChatViewProps) {
             <div className="relative flex min-h-0 flex-1 flex-col">
               {/* Messages — LegendList handles virtualization and scrolling internally */}
               <MessagesTimeline
-                citationRequest={citationRequest}
+                citationRequest={threadFindOpen ? null : citationRequest}
+                threadFindRequest={threadFindRequest}
                 citationHistoryLoading={threadDetailLoading}
                 onCiteAssistantText={citeAssistantText}
                 agentPanelModel={agentPanelModel}
@@ -7821,6 +7858,16 @@ function ChatViewContent(props: ChatViewProps) {
                 topFadeEnabled={!hasTimelineTopBanner}
                 loadEarlier={loadEarlierTurns}
               />
+
+              {threadFindOpen && supportsThreadFind ? (
+                <ThreadFindBar
+                  environmentId={activeThread.environmentId}
+                  threadId={activeThread.id}
+                  focusRequestId={threadFindFocusRequestId}
+                  onRequest={setThreadFindRequest}
+                  onClose={closeThreadFindBar}
+                />
+              ) : null}
 
               {/* scroll to end pill — shown when user has scrolled away from the live edge */}
               {showScrollToBottom && (
