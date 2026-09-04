@@ -277,6 +277,46 @@ export function isRelativeFilePath(path: string): boolean {
   );
 }
 
+function isWindowsPathStyle(value: string): boolean {
+  return isWindowsAbsolutePath(value) || /[A-Za-z]:\\/.test(value);
+}
+
+function joinPath(base: string, next: string, separator: "/" | "\\"): string {
+  const cleanBase = base.replace(/[\\/]+$/, "");
+  if (separator === "\\") return `${cleanBase}\\${next.replaceAll("/", "\\")}`;
+  return `${cleanBase}/${next.replace(/^\/+/, "")}`;
+}
+
+function inferHomeFromCwd(cwd: string): string | undefined {
+  const posixUser = cwd.match(/^\/Users\/([^/]+)/);
+  if (posixUser?.[1]) return `/Users/${posixUser[1]}`;
+
+  const posixHome = cwd.match(/^\/home\/([^/]+)/);
+  if (posixHome?.[1]) return `/home/${posixHome[1]}`;
+
+  return cwd.match(/^([A-Za-z]:\\Users\\[^\\]+)/)?.[1];
+}
+
+export function resolveFilePathAgainstCwd(path: string, cwd: string): string {
+  if (path.startsWith("~/")) {
+    const home = inferHomeFromCwd(cwd);
+    if (!home) return path;
+    const separator: "/" | "\\" = isWindowsPathStyle(home) ? "\\" : "/";
+    return joinPath(home, path.slice(2), separator);
+  }
+  if (!isRelativeFilePath(path)) return path;
+  const separator: "/" | "\\" = isWindowsPathStyle(cwd) ? "\\" : "/";
+  return joinPath(cwd, path, separator);
+}
+
+export function resolvePathLinkTarget(rawPath: string, cwd: string): string {
+  const position = splitFilePathPosition(rawPath);
+  return formatFilePathPosition({
+    ...position,
+    path: resolveFilePathAgainstCwd(position.path, cwd),
+  });
+}
+
 function looksLikePosixFilesystemPath(path: string): boolean {
   if (!path.startsWith("/")) return false;
   if (POSIX_FILE_ROOT_PREFIXES.some((prefix) => path.startsWith(prefix))) return true;

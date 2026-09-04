@@ -50,6 +50,13 @@ describe("threadFindVisibleText", () => {
         '<a href="src/index.ts">first</a> <a href="test/index.ts">second</a>',
       ),
     ).toBe("index.ts index.ts");
+    expect(
+      threadFindVisibleText(
+        "assistant",
+        '[first](src/index.ts) [second](test/index.ts) <a href="/workspace/src/index.ts">third</a>',
+        { workspaceRoot: "/workspace" },
+      ),
+    ).toBe("index.ts · workspace/src index.ts · workspace/test index.ts · workspace/src");
   });
 
   it("keeps raw HTML literal in user messages", () => {

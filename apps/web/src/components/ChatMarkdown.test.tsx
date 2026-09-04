@@ -273,6 +273,22 @@ describe("ChatMarkdown file option chips", () => {
     expect(html).toContain("select-text");
   });
 
+  it("reuses Markdown file suffixes for matching raw HTML links", () => {
+    const html = renderToStaticMarkup(
+      <ChatMarkdown
+        cwd="/tmp/project"
+        text={
+          '[Source](/tmp/project/src/index.ts) [Test](/tmp/project/test/index.ts) <a href="/tmp/project/src/index.ts">Raw</a>'
+        }
+        parseRawHtml
+      />,
+    );
+    const renderedText = html.replace(/<[^>]+>/g, "");
+
+    expect(renderedText.match(/index\.ts · project\/src/g)).toHaveLength(2);
+    expect(renderedText).toContain("index.ts · project/test");
+  });
+
   it.each([true, false])(
     "renders Codex file citations as file chips with parseRawHtml=%s",
     (parseRawHtml) => {

@@ -17,6 +17,7 @@ import {
   fileBasename,
   inlineCodeFilePathCandidate,
   parseMarkdownFileLink,
+  resolveFilePathAgainstCwd,
   type FilePathPosition,
 } from "./markdownLinks.ts";
 import { remarkGithubAlerts } from "./markdownGithubAlerts.ts";
@@ -88,11 +89,22 @@ function threadFindFileLabel(
   return parts.join(" · ");
 }
 
+function threadFindFilePath(path: string, workspaceRoot: string | undefined): string {
+  return (workspaceRoot ? resolveFilePathAgainstCwd(path, workspaceRoot) : path).replaceAll(
+    "\\",
+    "/",
+  );
+}
+
 function remarkThreadFindPresentation() {
   return (tree: unknown, file: ThreadFindProcessorFile) => {
     const fileNodes: ThreadFindFileNode[] = [];
     const threadFindSkills = (file.data.threadFindSkills ??
       []) as ReadonlyArray<ProviderSkillLabel>;
+    const workspaceRoot =
+      typeof file.data.threadFindWorkspaceRoot === "string"
+        ? file.data.threadFindWorkspaceRoot
+        : undefined;
     const skillsByName = new Map<string, ProviderSkillLabel>();
     for (const skill of threadFindSkills) {
       if (!skillsByName.has(skill.name)) skillsByName.set(skill.name, skill);
@@ -152,7 +164,7 @@ function remarkThreadFindPresentation() {
         fileNodes.push({
           node,
           position,
-          path: position.path.replaceAll("\\", "/"),
+          path: threadFindFilePath(position.path, workspaceRoot),
         });
       }
       const excludesSkillPresentation =
@@ -170,6 +182,7 @@ function remarkThreadFindPresentation() {
     visit(tree as ThreadFindMarkdownNode);
 
     const suffixByPath = buildFileLinkParentSuffixByPath(fileNodes.map(({ path }) => path));
+    file.data.threadFindFileLinkParentSuffixByPath = suffixByPath;
     for (const file of fileNodes) {
       const label = threadFindFileLabel(file.position, file.path, suffixByPath);
       if (file.node.type === "link") {
@@ -193,6 +206,10 @@ function rehypeThreadFindPresentation() {
     const root = tree as ThreadFindHtmlNode;
     const threadFindSkills = (file.data.threadFindSkills ??
       []) as ReadonlyArray<ProviderSkillLabel>;
+    const workspaceRoot =
+      typeof file.data.threadFindWorkspaceRoot === "string"
+        ? file.data.threadFindWorkspaceRoot
+        : undefined;
     const skillsByName = new Map<string, ProviderSkillLabel>();
     for (const skill of threadFindSkills) {
       if (!skillsByName.has(skill.name)) skillsByName.set(skill.name, skill);
@@ -214,7 +231,7 @@ function rehypeThreadFindPresentation() {
             fileNodes.push({
               node,
               position,
-              path: position.path.replaceAll("\\", "/"),
+              path: threadFindFilePath(position.path, workspaceRoot),
             });
           }
         }
@@ -223,7 +240,11 @@ function rehypeThreadFindPresentation() {
     };
     projectLinks(root);
 
-    const suffixByPath = new Map<string, string>();
+    const storedSuffixByPath = file.data.threadFindFileLinkParentSuffixByPath;
+    const suffixByPath =
+      storedSuffixByPath instanceof Map
+        ? (storedSuffixByPath as ReadonlyMap<string, string>)
+        : new Map<string, string>();
     for (const fileNode of fileNodes) {
       fileNode.node.children = [
         {
@@ -532,7 +553,10 @@ export function threadFindVisibleText(
   const markdownRoot = parser.parse(markdown);
   const root = parser.runSync(markdownRoot, {
     value: markdown,
-    data: { threadFindSkills: options.skills },
+    data: {
+      threadFindSkills: options.skills,
+      threadFindWorkspaceRoot: options.workspaceRoot,
+    },
   }) as ThreadFindHtmlNode;
   const parts = projection?.visibleSummaries.flatMap(({ text: summary }) => [summary, "\n"]) ?? [];
   appendHtmlText(root, parts);
