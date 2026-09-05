@@ -91,12 +91,11 @@ Mobile shows the full saved quote and its comment in sent messages. It does not 
 
 ## Images and videos in messages
 
-On web, desktop, and mobile, select a link to an image or video to open it inside T3 Code.
-Workspace image and video links open the file viewer. Links to media outside the workspace
-open a media preview.
+On web, desktop, and mobile, select a link to an image or video in the workspace to open it inside
+T3 Code's file viewer.
 Videos opened from the file explorer or a file-viewer tab also play inside T3 Code. They
 stream from the environment as needed, rather than downloading the entire video before playback.
-Paths in inline code, such as `/tmp/recording.mp4`, work the same way. Image embeds stay inline;
+Paths in inline code, such as `output/recording.mp4`, work the same way. Image embeds stay inline;
 video embeds show a player with controls and an option to expand. Visible video previews load
 an initial frame when supported, but stay paused until you press Play. Video file references use
 a filmstrip icon.
@@ -113,17 +112,17 @@ viewer from the same menu. Saving downloads a copy only when you request it; it 
 how the video buffers during playback. On iOS, touch and hold a file reference in a message to
 copy its full or relative path or open it in the file viewer.
 
-Use Markdown image syntax to embed either kind of media:
+Use Markdown image syntax to embed media:
 
 ```markdown
-![Screenshot](/tmp/screenshot.png)
-![Recording](/tmp/recording.mp4)
-[Open recording](/tmp/recording.mp4)
+![Screenshot](output/screenshot.png)
+![Recording](output/recording.mp4)
+[Open recording](output/recording.mp4)
 ```
 
-Relative paths resolve from the thread's workspace. Absolute paths and `file://` links refer to
-the environment's machine, even when you connect remotely or use your phone. Supported media
-can live outside the workspace, including in Downloads or `/tmp`.
+Relative paths resolve from the thread's workspace. Absolute paths and `file://` links can preview
+media only when the resolved file is within that workspace, even when you connect remotely or use
+your phone.
 
 T3 Code serves the original file without adding it to attachment storage. If that file is moved
 or deleted, its preview can no longer load from the environment. A browser or device may still
@@ -135,11 +134,9 @@ are not supported; use the Markdown embed syntax above.
 ## Files outside the workspace
 
 When an agent links to a file it wrote outside the workspace, such as a Markdown report in
-`/tmp`, select the link to open it in the file viewer. The viewer shows the file read-only, with
-rendered Markdown available as usual; it cannot edit files outside the workspace. The workspace
-file tree stays hidden because it does not describe the open file. HTML and PDF files outside the
-workspace open the same way as ones inside it. Because such a file is served on its own, an HTML
-page outside the workspace cannot load scripts, styles, or images from files beside it.
+`/tmp`, select the link to open its source read-only in the file viewer; T3 Code cannot edit files
+outside the workspace. The workspace file tree stays hidden because it does not describe the open
+file. Media previews and rendered HTML or PDF views are limited to files within the workspace.
 
 ## HTML and PDF files in the file viewer
 

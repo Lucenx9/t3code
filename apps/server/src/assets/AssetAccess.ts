@@ -231,22 +231,31 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
 
   switch (input.resource._tag) {
     case "media-file": {
-      let requestedPath = input.resource.path;
-      if (!path.isAbsolute(requestedPath)) {
-        if (!input.workspaceRoot) {
-          return yield* new AssetWorkspaceContextNotFoundError({ resource: input.resource });
-        }
-        const workspaceRoot = yield* workspacePaths
-          .normalizeWorkspaceRoot(input.workspaceRoot)
-          .pipe(
-            Effect.mapError(
-              (cause) =>
-                new AssetWorkspaceRootNormalizationError({ resource: input.resource, cause }),
-            ),
-          );
-        requestedPath = path.resolve(workspaceRoot, requestedPath);
+      if (!input.workspaceRoot) {
+        return yield* new AssetWorkspaceContextNotFoundError({ resource: input.resource });
       }
-      const canonicalFile = yield* resolveCanonicalFile(requestedPath).pipe(
+      const workspaceRoot = yield* workspacePaths
+        .normalizeWorkspaceRoot(input.workspaceRoot)
+        .pipe(
+          Effect.mapError(
+            (cause) =>
+              new AssetWorkspaceRootNormalizationError({ resource: input.resource, cause }),
+          ),
+        );
+      const relativePath = path.isAbsolute(input.resource.path)
+        ? path.relative(workspaceRoot, input.resource.path)
+        : input.resource.path;
+      const resolved = yield* workspacePaths
+        .resolveRelativePathWithinRoot({ workspaceRoot, relativePath })
+        .pipe(
+          Effect.mapError(
+            (cause) => new AssetWorkspacePathValidationError({ resource: input.resource, cause }),
+          ),
+        );
+      const canonicalFile = yield* resolveCanonicalWorkspaceFile({
+        workspaceRoot,
+        relativePath: resolved.relativePath,
+      }).pipe(
         Effect.mapError(
           (cause) => new AssetWorkspaceAssetInspectionError({ resource: input.resource, cause }),
         ),

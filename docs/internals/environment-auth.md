@@ -40,19 +40,18 @@ as a report in a temp directory, read-only.
 ## Media preview access
 
 Clients with `orchestration:read` can request a `media-file` URL through `assets.createUrl` for
-supported images, videos, HTML, and PDF files anywhere the environment's server account can read.
-A thread ID supplies the workspace for relative paths; absolute paths refer to the environment
-host, not the client.
+supported images, videos, HTML, and PDF files within the selected thread's workspace. A thread ID
+supplies that workspace; absolute paths are accepted only when they resolve within it.
 
-[`AssetAccess.ts`](../../apps/server/src/assets/AssetAccess.ts) resolves symlinks, requires a regular
-file, and validates the resolved file's literal extension. It opens the file and signs its canonical
-path and device/inode identity for one hour. The token grants access to that exact file, not adjacent
-files or its containing directory. Serving rechecks the canonical path, media type, and opened
-descriptor's identity, then streams full or partial responses from that descriptor. Replacing a
-file atomically requires a freshly signed URL; editing it in place does not. Because the token names
-one file, an HTML document served this way cannot load sibling assets; the directory-scoped
-`workspace-file` resource remains the route for HTML inside the workspace. Uploaded attachments keep
-their separate asset resource.
+[`AssetAccess.ts`](../../apps/server/src/assets/AssetAccess.ts) resolves symlinks, verifies that the
+canonical file remains within the workspace, requires a regular file, and validates the resolved
+file's literal extension. It opens the file and signs its canonical path and device/inode identity
+for one hour. The token grants access to that exact file, not adjacent files or its containing
+directory. Serving rechecks the canonical path, media type, and opened descriptor's identity, then
+streams full or partial responses from that descriptor. Replacing a file atomically requires a
+freshly signed URL; editing it in place does not. Because the token names one file, an HTML document
+served this way cannot load sibling assets; the directory-scoped `workspace-file` resource remains
+the route for HTML inside the workspace. Uploaded attachments keep their separate asset resource.
 
 Signed asset URLs are bearer credentials. Anyone who obtains a URL and can reach the environment
 can fetch that file until it expires. Clients should copy the authored reference, not the temporary

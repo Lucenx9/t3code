@@ -2,7 +2,12 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeHttpPlatform from "@effect/platform-node/NodeHttpPlatform";
 import * as NodeFSP from "node:fs/promises";
-import { AssetPreviewTypeValidationError, ThreadId } from "@t3tools/contracts";
+import {
+  AssetPreviewTypeValidationError,
+  AssetWorkspaceAssetNotFoundError,
+  AssetWorkspacePathValidationError,
+  ThreadId,
+} from "@t3tools/contracts";
 import { PROJECT_FAVICON_FALLBACK_MARKER } from "@t3tools/shared/projectFavicon";
 import { describe, expect, it } from "@effect/vitest";
 import * as Crypto from "effect/Crypto";
@@ -44,65 +49,69 @@ const testLayer = Layer.mergeAll(
 ).pipe(Layer.provideMerge(NodeServices.layer));
 
 describe("AssetAccess", () => {
-  it.effect("issues exact URLs for media and browser documents outside the workspace", () =>
+  it.effect("rejects absolute media paths outside the workspace", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-media-root-" });
       const outside = yield* fs.makeTempDirectoryScoped({ prefix: "t3-media-outside-" });
-      for (const [name, mimeType] of [
-        ["screenshot.png", "image/png"],
-        ["recording.mp4", "video/mp4"],
-        ["recording.webm", "video/webm"],
-        ["report.html", "text/html"],
-        ["report.pdf", "application/pdf"],
-      ] as const) {
+      for (const name of [
+        "screenshot.png",
+        "recording.mp4",
+        "recording.webm",
+        "report.html",
+        "report.pdf",
+      ]) {
         const filePath = path.join(outside, name);
         yield* fs.writeFileString(filePath, "media");
-        const canonicalFile = yield* fs.realPath(filePath);
-        const result = yield* issueAssetUrl({
+        const error = yield* issueAssetUrl({
           resource: { _tag: "media-file", threadId: ThreadId.make("thread-1"), path: filePath },
           workspaceRoot: root,
-        });
-        const suffix = result.relativeUrl.slice(`${ASSET_ROUTE_PREFIX}/`.length);
-        const separator = suffix.indexOf("/");
-        const token = suffix.slice(0, separator);
-        expect(yield* resolveAsset(token, suffix.slice(separator + 1))).toMatchObject({
-          kind: "file",
-          path: canonicalFile,
-          mimeType,
-        });
-        yield* fs.writeFileString(path.join(outside, "sibling.png"), "private sibling");
-        expect(yield* resolveAsset(token, "sibling.png")).toBeNull();
-        expect(yield* resolveAsset(token, `../${name}`)).toBeNull();
-        expect(yield* resolveAsset(`${token}tampered`, name)).toBeNull();
+        }).pipe(Effect.flip);
+        expect(error).toBeInstanceOf(AssetWorkspacePathValidationError);
       }
     }).pipe(Effect.provide(testLayer)),
   );
 
-  it.effect("resolves relative media paths from the thread workspace, including outside it", () =>
+  it.effect("resolves media within the workspace and rejects traversal outside it", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const directory = yield* fs.makeTempDirectoryScoped({ prefix: "t3-media-relative-" });
       const root = path.join(directory, "workspace");
       yield* fs.makeDirectory(root);
-      for (const relativePath of ["screenshot.png", "../recording.mp4"]) {
-        const filePath = path.resolve(root, relativePath);
-        yield* fs.writeFileString(filePath, "media");
-        const result = yield* issueAssetUrl({
-          resource: { _tag: "media-file", threadId: ThreadId.make("thread-1"), path: relativePath },
-          workspaceRoot: root,
-        });
-        const suffix = result.relativeUrl.slice(`${ASSET_ROUTE_PREFIX}/`.length);
-        const separator = suffix.indexOf("/");
-        expect(
-          yield* resolveAsset(suffix.slice(0, separator), suffix.slice(separator + 1)),
-        ).toMatchObject({
-          kind: "file",
-          path: yield* fs.realPath(filePath),
-        });
-      }
+      const filePath = path.join(root, "screenshot.png");
+      yield* fs.writeFileString(filePath, "media");
+      const result = yield* issueAssetUrl({
+        resource: { _tag: "media-file", threadId: ThreadId.make("thread-1"), path: filePath },
+        workspaceRoot: root,
+      });
+      const suffix = result.relativeUrl.slice(`${ASSET_ROUTE_PREFIX}/`.length);
+      const separator = suffix.indexOf("/");
+      expect(
+        yield* resolveAsset(suffix.slice(0, separator), suffix.slice(separator + 1)),
+      ).toMatchObject({ kind: "file", path: yield* fs.realPath(filePath) });
+
+      yield* fs.writeFileString(path.join(directory, "recording.mp4"), "media");
+      const error = yield* issueAssetUrl({
+        resource: {
+          _tag: "media-file",
+          threadId: ThreadId.make("thread-1"),
+          path: "../recording.mp4",
+        },
+        workspaceRoot: root,
+      }).pipe(Effect.flip);
+      expect(error).toBeInstanceOf(AssetWorkspacePathValidationError);
+
+      const outsideFile = path.join(directory, "outside.png");
+      const aliasPath = path.join(root, "alias.png");
+      yield* fs.writeFileString(outsideFile, "private media");
+      yield* fs.symlink(outsideFile, aliasPath);
+      const symlinkError = yield* issueAssetUrl({
+        resource: { _tag: "media-file", threadId: ThreadId.make("thread-1"), path: aliasPath },
+        workspaceRoot: root,
+      }).pipe(Effect.flip);
+      expect(symlinkError).toBeInstanceOf(AssetWorkspaceAssetNotFoundError);
     }).pipe(Effect.provide(testLayer)),
   );
 
@@ -116,6 +125,7 @@ describe("AssetAccess", () => {
         yield* fs.writeFileString(filePath, "not media");
         const error = yield* issueAssetUrl({
           resource: { _tag: "media-file", threadId: ThreadId.make("thread-1"), path: filePath },
+          workspaceRoot: root,
         }).pipe(Effect.flip);
         expect(error).toBeInstanceOf(AssetPreviewTypeValidationError);
       }
@@ -123,12 +133,14 @@ describe("AssetAccess", () => {
       yield* fs.symlink(path.join(root, "secret.txt"), disguisedPath);
       const disguisedError = yield* issueAssetUrl({
         resource: { _tag: "media-file", threadId: ThreadId.make("thread-1"), path: disguisedPath },
+        workspaceRoot: root,
       }).pipe(Effect.flip);
       expect(disguisedError).toBeInstanceOf(AssetPreviewTypeValidationError);
       const directoryPath = path.join(root, "directory.png");
       yield* fs.makeDirectory(directoryPath);
       const directoryError = yield* issueAssetUrl({
         resource: { _tag: "media-file", threadId: ThreadId.make("thread-1"), path: directoryPath },
+        workspaceRoot: root,
       }).pipe(Effect.flip);
       expect(directoryError._tag).toBe("AssetWorkspaceAssetNotFoundError");
     }).pipe(Effect.provide(testLayer)),
@@ -148,6 +160,7 @@ describe("AssetAccess", () => {
       const canonicalFile = yield* fs.realPath(filePath);
       const result = yield* issueAssetUrl({
         resource: { _tag: "media-file", threadId: ThreadId.make("thread-1"), path: aliasPath },
+        workspaceRoot: root,
       });
       const suffix = result.relativeUrl.slice(`${ASSET_ROUTE_PREFIX}/`.length);
       const separator = suffix.indexOf("/");
@@ -176,6 +189,7 @@ describe("AssetAccess", () => {
       yield* fs.writeFileString(secretPath, "private information");
       const result = yield* issueAssetUrl({
         resource: { _tag: "media-file", threadId: ThreadId.make("thread-1"), path: filePath },
+        workspaceRoot: root,
       });
       const suffix = result.relativeUrl.slice(`${ASSET_ROUTE_PREFIX}/`.length);
       const separator = suffix.indexOf("/");
@@ -210,6 +224,7 @@ describe("AssetAccess", () => {
       const canonicalPath = yield* fs.realPath(filePath);
       const result = yield* issueAssetUrl({
         resource: { _tag: "media-file", threadId: ThreadId.make("thread-1"), path: filePath },
+        workspaceRoot: root,
       });
       const suffix = result.relativeUrl.slice(`${ASSET_ROUTE_PREFIX}/`.length);
       const separator = suffix.indexOf("/");
@@ -277,6 +292,7 @@ describe("AssetAccess", () => {
       const canonicalPath = yield* fs.realPath(filePath);
       const result = yield* issueAssetUrl({
         resource: { _tag: "media-file", threadId: ThreadId.make("thread-1"), path: filePath },
+        workspaceRoot: root,
       });
       const suffix = result.relativeUrl.slice(`${ASSET_ROUTE_PREFIX}/`.length);
       const separator = suffix.indexOf("/");
@@ -331,6 +347,7 @@ describe("AssetAccess", () => {
           threadId: ThreadId.make("thread-1"),
           path: filePath,
         },
+        workspaceRoot: root,
       };
       const original = yield* issueAssetUrl(input);
       const suffix = original.relativeUrl.slice(`${ASSET_ROUTE_PREFIX}/`.length);
