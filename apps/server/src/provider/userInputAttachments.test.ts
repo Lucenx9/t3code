@@ -94,8 +94,10 @@ describe("normalizeUserInputAnswers", () => {
           _tag: "ProviderValidationError",
           operation: "respondToUserInput",
         });
-        expect(error.issue).toContain("q");
+        expect(error.issue).toContain("index 0");
       }
+      const second = yield* normalizeUserInputAnswers({ ok: "fine", bad: 42 }).pipe(Effect.flip);
+      expect(second.issue).toContain("index 1");
     }),
   );
 });

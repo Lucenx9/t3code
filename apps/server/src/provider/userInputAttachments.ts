@@ -23,7 +23,7 @@ export const normalizeUserInputAnswers = Effect.fn("normalizeUserInputAnswers")(
   answers: ProviderUserInputAnswers,
 ): Effect.fn.Return<Record<string, string | string[]>, ProviderValidationError> {
   const normalized = new Map<string, string | string[]>();
-  for (const [questionId, value] of Object.entries(answers)) {
+  for (const [index, [questionId, value]] of Object.entries(answers).entries()) {
     if (typeof value === "string") {
       normalized.set(questionId, value);
     } else if (isStringArray(value)) {
@@ -35,9 +35,11 @@ export const normalizeUserInputAnswers = Effect.fn("normalizeUserInputAnswers")(
         value.answers.length === 1 && only !== undefined ? only : [...value.answers],
       );
     } else {
+      // Report the position, not the client-controlled key: error attributes
+      // stay safe and bounded.
       return yield* new ProviderValidationError({
         operation: "respondToUserInput",
-        issue: `Answer for '${questionId}' must be a string, a string array, or { answers: string[] }.`,
+        issue: `Answer at index ${index} must be a string, a string array, or { answers: string[] }.`,
       });
     }
   }
