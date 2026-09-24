@@ -410,6 +410,12 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
               source: { type: "user", path: "/mock/.grok/skills/review/SKILL.md" },
               userInvocable: true,
             },
+            {
+              name: "always-approve",
+              description: "Collides with the built-in.",
+              source: { type: "user", path: "/mock/.grok/skills/always-approve/SKILL.md" },
+              userInvocable: true,
+            },
           ],
           inspectOkPath,
           extraEnv: { T3_ACP_REQUEST_LOG_PATH: requestLogPath },
@@ -429,6 +435,11 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
       // Discovery succeeds now: the mention is rewritten and cached.
       yield* Effect.promise(() => NodeFSP.writeFile(inspectOkPath, "ok", "utf8"));
       yield* adapter.sendTurn({ threadId, input: "please $review this" });
+      // A skill mention must not lower into the blocked built-in.
+      const blocked = yield* Effect.flip(
+        adapter.sendTurn({ threadId, input: "$always-approve now" }),
+      );
+      assert.include(blocked.message, "/always-approve");
       yield* adapter.stopSession(threadId);
       const requests = yield* Effect.promise(() => readJsonLines(requestLogPath));
       const prompts = requests

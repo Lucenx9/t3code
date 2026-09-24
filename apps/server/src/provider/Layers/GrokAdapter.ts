@@ -95,6 +95,7 @@ const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.fromJsonStri
 
 const PROVIDER = ProviderDriverKind.make("grok");
 const GROK_RESUME_VERSION = 1 as const;
+const ALWAYS_APPROVE_COMMAND = /^\/always-approve(?:\s|$)/i;
 const NANOS_PER_MILLI = 1_000_000n;
 // ACP does not expose Grok's private `streaming_reasoning` phase. Once it has
 // emitted standard ACP progress, ten silent minutes is long enough to avoid
@@ -1526,14 +1527,17 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
         }).pipe(Effect.scoped),
       );
 
+    const alwaysApproveRejected = () =>
+      new ProviderAdapterRequestError({
+        provider: PROVIDER,
+        method: "session/prompt",
+        detail: "Change permissions with T3's permission selector instead of /always-approve.",
+      });
+
     const sendTurn: GrokAdapterShape["sendTurn"] = (input) =>
       Effect.gen(function* () {
-        if (/^\/always-approve(?:\s|$)/i.test(input.input?.trim() ?? "")) {
-          return yield* new ProviderAdapterRequestError({
-            provider: PROVIDER,
-            method: "session/prompt",
-            detail: "Change permissions with T3's permission selector instead of /always-approve.",
-          });
+        if (ALWAYS_APPROVE_COMMAND.test(input.input?.trim() ?? "")) {
+          return yield* alwaysApproveRejected();
         }
         const prepared = yield* withThreadLock(
           input.threadId,
@@ -1609,6 +1613,10 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 rawText && grokSkillNames
                   ? rewriteGrokSkillMentions(rawText, grokSkillNames)
                   : rawText;
+              // A skill named `always-approve` would lower to the built-in.
+              if (text && ALWAYS_APPROVE_COMMAND.test(text)) {
+                return yield* alwaysApproveRejected();
+              }
               // Grok ingests images only. Generic files reach the agent
               // through the path line ProviderService puts in the prompt.
               const imagePromptParts = yield* Effect.forEach(
