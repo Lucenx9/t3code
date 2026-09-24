@@ -83,6 +83,11 @@ import {
   XAiAskUserQuestionRequest,
   XAiExitPlanModeRequest,
 } from "../acp/XAiAcpExtension.ts";
+import {
+  discoverGrokSkills,
+  hasGrokSkillMention,
+  rewriteGrokSkillMentions,
+} from "../Drivers/GrokSkills.ts";
 import { type GrokAdapterShape } from "../Services/GrokAdapter.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 
@@ -152,6 +157,7 @@ interface GrokSessionContext {
   /** True after enter_plan_mode until the turn ends or exit_plan_mode resolves. */
   planModeActive: boolean;
   activeTurnId: TurnId | undefined;
+  grokSkillNames: ReadonlySet<string> | undefined;
   /** Turns already interrupted; late prompt RPCs must not resurrect them. */
   interruptedTurnIds: Set<TurnId>;
   /** Number of sendTurn prompts currently in flight or being prepared.
@@ -1300,6 +1306,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             lastKnownProposedPlanTurnId: undefined,
             planModeActive: false,
             activeTurnId: undefined,
+            grokSkillNames: undefined,
             interruptedTurnIds: new Set(),
             promptsInFlight: 0,
             promptEpoch: 0,
@@ -1572,7 +1579,32 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 "reasoningEffort",
               );
 
-              const text = input.input?.trim();
+              const rawText = input.input?.trim();
+              let grokSkillNames = ctx.grokSkillNames;
+              if (rawText && hasGrokSkillMention(rawText) && grokSkillNames === undefined) {
+                const skills = yield* discoverGrokSkills(
+                  grokSettings,
+                  options?.environment ?? hostEnvironment,
+                  ctx.session.cwd,
+                ).pipe(
+                  Effect.tapError((cause) =>
+                    Effect.logDebug("Grok skill discovery failed.", { cause }),
+                  ),
+                  Effect.orElseSucceed(() => []),
+                  Effect.provideService(
+                    ChildProcessSpawner.ChildProcessSpawner,
+                    childProcessSpawner,
+                  ),
+                );
+                grokSkillNames = new Set(
+                  skills.filter((skill) => skill.enabled).map((skill) => skill.name),
+                );
+                ctx.grokSkillNames = grokSkillNames;
+              }
+              const text =
+                rawText && grokSkillNames
+                  ? rewriteGrokSkillMentions(rawText, grokSkillNames)
+                  : rawText;
               // Grok ingests images only. Generic files reach the agent
               // through the path line ProviderService puts in the prompt.
               const imagePromptParts = yield* Effect.forEach(
