@@ -159,6 +159,8 @@ interface GrokSessionContext {
   planModeActive: boolean;
   activeTurnId: TurnId | undefined;
   grokSkillNames: ReadonlySet<string> | undefined;
+  /** Bumped by every Stop, so a send that awaited outside the lock sees it. */
+  stopRequests: number;
   /** Turns already interrupted; late prompt RPCs must not resurrect them. */
   interruptedTurnIds: Set<TurnId>;
   /** Number of sendTurn prompts currently in flight or being prepared.
@@ -1308,6 +1310,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             planModeActive: false,
             activeTurnId: undefined,
             grokSkillNames: undefined,
+            stopRequests: 0,
             interruptedTurnIds: new Set(),
             promptsInFlight: 0,
             promptEpoch: 0,
@@ -1534,7 +1537,9 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
         const rawText = input.input?.trim();
         const sessionCtx = sessions.get(input.threadId);
         let grokSkillNames = sessionCtx?.grokSkillNames;
+        let stopsBeforeDiscovery: number | undefined;
         if (sessionCtx && rawText && hasGrokSkillMention(rawText) && grokSkillNames === undefined) {
+          stopsBeforeDiscovery = sessionCtx.stopRequests;
           const skills = yield* discoverGrokSkills(
             grokSettings,
             options?.environment ?? hostEnvironment,
@@ -1583,6 +1588,17 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             // Bind the turn id before cooperative yields so interruptTurn can
             // settle this prompt even if stop arrives during preparation.
             ctx.activeTurnId = turnId;
+            // A Stop during discovery had no turn to mark yet; a replaced
+            // session did not produce the catalog the rewrite used.
+            const sameSession = ctx === sessionCtx;
+            if (
+              sameSession &&
+              stopsBeforeDiscovery !== undefined &&
+              ctx.stopRequests !== stopsBeforeDiscovery
+            ) {
+              ctx.interruptedTurnIds.add(turnId);
+            }
+            const turnText = sameSession ? text : rawText;
             // New turn: do not fall back to a previous turn's plan.md body when
             // exit_plan_mode omits planContent.
             if (steeringTurnId === undefined) {
@@ -1644,7 +1660,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                   }),
               );
               const promptParts: Array<EffectAcpSchema.ContentBlock> = [
-                ...(text ? [{ type: "text" as const, text }] : []),
+                ...(turnText ? [{ type: "text" as const, text: turnText }] : []),
                 ...imagePromptParts,
               ];
 
@@ -1676,7 +1692,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 : undefined;
               // ACP slash commands must receive only their own arguments.
               const runtimeInstructions =
-                text && /^\/[^\s/]+(?:\s|$)/.test(text)
+                turnText && /^\/[^\s/]+(?:\s|$)/.test(turnText)
                   ? undefined
                   : buildRuntimeInstructions({
                       harness: "Grok",
@@ -2064,6 +2080,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             return { _tag: "Ignore" as const };
           }
           const interruptedTurnId = turnId ?? activeTurnId;
+          ctx.stopRequests += 1;
           if (interruptedTurnId !== undefined) {
             ctx.interruptedTurnIds.add(interruptedTurnId);
           }
