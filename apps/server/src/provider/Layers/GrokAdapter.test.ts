@@ -54,6 +54,36 @@ async function makeMockGrokWrapper(extraEnv?: Record<string, string>) {
   });
 }
 
+async function makeMockGrokWrapperWithSkills(options: {
+  readonly skills: ReadonlyArray<unknown>;
+  /** `inspect --json` fails until this flag file exists, then reports the skills. */
+  readonly inspectOkPath: string;
+  readonly extraEnv?: Record<string, string>;
+}) {
+  const dir = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "grok-acp-mock-skills-"));
+  return writeFakeCli({
+    directory: dir,
+    name: "fake-grok",
+    env: options.extraEnv ?? {},
+    source: [
+      'import { readFileSync as readInspectFlag } from "node:fs";',
+      'import { pathToFileURL } from "node:url";',
+      "const args = process.argv.slice(2);",
+      'if (args[0] === "inspect" && args[1] === "--json") {',
+      "  try {",
+      `    readInspectFlag(${JSON.stringify(options.inspectOkPath)}, "utf8");`,
+      "  } catch {",
+      "    process.exit(1);",
+      "  }",
+      `  process.stdout.write(${JSON.stringify(JSON.stringify({ skills: options.skills }))});`,
+      "  process.exit(0);",
+      "}",
+      `await import(pathToFileURL(${JSON.stringify(mockAgentPath)}).href);`,
+      "",
+    ].join("\n"),
+  });
+}
+
 function waitForFileContent(
   filePath: string,
   attempts = 40,
@@ -360,6 +390,55 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
       assert.include(prompts[1]?.[1]?.text, "Grok harness, as grok-4.6");
       assert.include(prompts[1]?.[1]?.text, "with low reasoning effort");
       assert.include(prompts[1]?.[1]?.text, "embed images and videos");
+    }),
+  );
+
+  it.effect("sends skills in Grok's native form and retries discovery after failure", () =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("grok-skill-dispatch");
+      const tempDir = yield* Effect.promise(() =>
+        NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "grok-skill-dispatch-")),
+      );
+      const requestLogPath = NodePath.join(tempDir, "requests.ndjson");
+      const inspectOkPath = NodePath.join(tempDir, "inspect-ok");
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockGrokWrapperWithSkills({
+          skills: [
+            {
+              name: "review",
+              description: "Review the change.",
+              source: { type: "user", path: "/mock/.grok/skills/review/SKILL.md" },
+              userInvocable: true,
+            },
+          ],
+          inspectOkPath,
+          extraEnv: { T3_ACP_REQUEST_LOG_PATH: requestLogPath },
+        }),
+      );
+      const adapter = yield* makeTestAdapter(wrapperPath);
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("grok"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        modelSelection: { instanceId: ProviderInstanceId.make("grok"), model: "grok-build" },
+      });
+      // Discovery fails while the flag file is missing: the turn still
+      // succeeds and the mention stays literal.
+      yield* adapter.sendTurn({ threadId, input: "please $review this" });
+      // Discovery succeeds now: the mention is rewritten and cached.
+      yield* Effect.promise(() => NodeFSP.writeFile(inspectOkPath, "ok", "utf8"));
+      yield* adapter.sendTurn({ threadId, input: "please $review this" });
+      yield* adapter.stopSession(threadId);
+      const requests = yield* Effect.promise(() => readJsonLines(requestLogPath));
+      const prompts = requests
+        .filter((request) => request.method === "session/prompt")
+        .map(
+          (request) => (request.params as { prompt: Array<{ type: string; text: string }> }).prompt,
+        );
+      assert.equal(prompts.length, 2);
+      assert.deepEqual(prompts[0]?.[0], { type: "text", text: "please $review this" });
+      assert.deepEqual(prompts[1]?.[0], { type: "text", text: "please /review this" });
     }),
   );
 

@@ -1590,16 +1590,20 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                   Effect.tapError((cause) =>
                     Effect.logDebug("Grok skill discovery failed.", { cause }),
                   ),
-                  Effect.orElseSucceed(() => []),
                   Effect.provideService(
                     ChildProcessSpawner.ChildProcessSpawner,
                     childProcessSpawner,
                   ),
+                  Effect.orElseSucceed(() => undefined),
                 );
-                grokSkillNames = new Set(
-                  skills.filter((skill) => skill.enabled).map((skill) => skill.name),
-                );
-                ctx.grokSkillNames = grokSkillNames;
+                // Cache only on success: a failed probe must not poison the
+                // session, so the next skill mention retries discovery.
+                if (skills !== undefined) {
+                  grokSkillNames = new Set(
+                    skills.filter((skill) => skill.enabled).map((skill) => skill.name),
+                  );
+                  ctx.grokSkillNames = grokSkillNames;
+                }
               }
               const text =
                 rawText && grokSkillNames
