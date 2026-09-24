@@ -1527,17 +1527,42 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
         }).pipe(Effect.scoped),
       );
 
-    const alwaysApproveRejected = () =>
-      new ProviderAdapterRequestError({
-        provider: PROVIDER,
-        method: "session/prompt",
-        detail: "Change permissions with T3's permission selector instead of /always-approve.",
-      });
-
     const sendTurn: GrokAdapterShape["sendTurn"] = (input) =>
       Effect.gen(function* () {
-        if (ALWAYS_APPROVE_COMMAND.test(input.input?.trim() ?? "")) {
-          return yield* alwaysApproveRejected();
+        // Skill discovery can take seconds, so it runs outside the thread
+        // lock: interruptTurn needs that lock to cancel a steered prompt.
+        const rawText = input.input?.trim();
+        const sessionCtx = sessions.get(input.threadId);
+        let grokSkillNames = sessionCtx?.grokSkillNames;
+        if (sessionCtx && rawText && hasGrokSkillMention(rawText) && grokSkillNames === undefined) {
+          const skills = yield* discoverGrokSkills(
+            grokSettings,
+            options?.environment ?? hostEnvironment,
+            sessionCtx.session.cwd,
+          ).pipe(
+            Effect.tapError((cause) => Effect.logDebug("Grok skill discovery failed.", { cause })),
+            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner),
+            Effect.orElseSucceed(() => undefined),
+          );
+          // Cache only on success: a failed probe must not poison the
+          // session, so the next skill mention retries discovery.
+          if (skills !== undefined) {
+            grokSkillNames = new Set(
+              skills.filter((skill) => skill.enabled).map((skill) => skill.name),
+            );
+            sessionCtx.grokSkillNames = grokSkillNames;
+          }
+        }
+        const text =
+          rawText && grokSkillNames ? rewriteGrokSkillMentions(rawText, grokSkillNames) : rawText;
+        // Checked after lowering so a skill named `always-approve` cannot
+        // reach the built-in either.
+        if (text && ALWAYS_APPROVE_COMMAND.test(text)) {
+          return yield* new ProviderAdapterRequestError({
+            provider: PROVIDER,
+            method: "session/prompt",
+            detail: "Change permissions with T3's permission selector instead of /always-approve.",
+          });
         }
         const prepared = yield* withThreadLock(
           input.threadId,
@@ -1583,40 +1608,6 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 "reasoningEffort",
               );
 
-              const rawText = input.input?.trim();
-              let grokSkillNames = ctx.grokSkillNames;
-              if (rawText && hasGrokSkillMention(rawText) && grokSkillNames === undefined) {
-                const skills = yield* discoverGrokSkills(
-                  grokSettings,
-                  options?.environment ?? hostEnvironment,
-                  ctx.session.cwd,
-                ).pipe(
-                  Effect.tapError((cause) =>
-                    Effect.logDebug("Grok skill discovery failed.", { cause }),
-                  ),
-                  Effect.provideService(
-                    ChildProcessSpawner.ChildProcessSpawner,
-                    childProcessSpawner,
-                  ),
-                  Effect.orElseSucceed(() => undefined),
-                );
-                // Cache only on success: a failed probe must not poison the
-                // session, so the next skill mention retries discovery.
-                if (skills !== undefined) {
-                  grokSkillNames = new Set(
-                    skills.filter((skill) => skill.enabled).map((skill) => skill.name),
-                  );
-                  ctx.grokSkillNames = grokSkillNames;
-                }
-              }
-              const text =
-                rawText && grokSkillNames
-                  ? rewriteGrokSkillMentions(rawText, grokSkillNames)
-                  : rawText;
-              // A skill named `always-approve` would lower to the built-in.
-              if (text && ALWAYS_APPROVE_COMMAND.test(text)) {
-                return yield* alwaysApproveRejected();
-              }
               // Grok ingests images only. Generic files reach the agent
               // through the path line ProviderService puts in the prompt.
               const imagePromptParts = yield* Effect.forEach(
