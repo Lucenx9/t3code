@@ -72,9 +72,10 @@ update fails. Download the new `.deb` and install it the same way.
 
 Linux AppImage:
 
-Download `T3-Code-x86_64.AppImage` from GitHub Releases. In-app updates replace that file without
-changing its path. If you installed an older versioned AppImage, update your desktop entry or
-symlink to the stable filename after the first upgrade.
+Download `T3-Code-x86_64.AppImage` or `T3-Code-arm64.AppImage` from GitHub Releases for your
+architecture. In-app updates replace that file without changing its path. If you installed an
+older versioned AppImage, update your desktop entry or symlink to the stable filename after the
+first upgrade.
 
 ### Windows Subsystem for Linux
 
