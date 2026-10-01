@@ -448,6 +448,7 @@ describe("ChatMarkdown streaming", () => {
   });
 });
 
+/** Median large/small runtime ratio across alternating samples; linear growth for a 4x input stays well under 10. */
 function runtimeGrowth({
   smallInput,
   largeInput,
@@ -531,7 +532,9 @@ describe("buildFileLinkParentSuffixByPath", () => {
     const largePaths = paths(4_000);
 
     expect(buildFileLinkParentSuffixByPath(largePaths).size).toBe(largePaths.length);
-    expect(runtimeGrowth({ smallInput: smallPaths, largeInput: largePaths })).toBeLessThan(10);
+    expect(
+      runtimeGrowth({ smallInput: smallPaths, largeInput: largePaths, repetitions: 4 }),
+    ).toBeLessThan(10);
   });
 
   it("scales linearly with path depth", () => {
@@ -548,7 +551,7 @@ describe("buildFileLinkParentSuffixByPath", () => {
 
     expect([...deepSuffixes.values()]).toEqual(["first/shared", "second/shared"]);
     expect(
-      runtimeGrowth({ smallInput: shallowPaths, largeInput: deepPaths, repetitions: 16 }),
+      runtimeGrowth({ smallInput: shallowPaths, largeInput: deepPaths, repetitions: 256 }),
     ).toBeLessThan(10);
   });
 });
