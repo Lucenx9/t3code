@@ -412,6 +412,73 @@ describe("ElectronUpdater", () => {
       ),
     );
 
+    it.effect("never stages through a pre-planted symlink", () =>
+      Effect.gen(function* () {
+        const dir = trackTempDir();
+        const appImage = NodePath.join(dir, "T3-Code-x86_64.AppImage");
+        const installer = NodePath.join(dir, "pending.AppImage");
+        const victim = NodePath.join(dir, "victim.txt");
+        NodeFS.writeFileSync(appImage, "running-binary");
+        NodeFS.writeFileSync(installer, "new-binary");
+        NodeFS.writeFileSync(victim, "precious-data");
+        // A predictable staging path would be followed here, overwriting the victim.
+        NodeFS.symlinkSync(victim, NodePath.join(dir, ".T3-Code-x86_64.AppImage.t3-pending"));
+        process.env.APPIMAGE = appImage;
+        autoUpdaterMock.downloadedUpdateHelper = {
+          file: installer,
+          downloadedFileInfo: {
+            fileName: "T3-Code-x86_64.AppImage",
+            sha512: sha512Base64("new-binary"),
+          },
+        };
+
+        const updater = yield* ElectronUpdater.ElectronUpdater;
+        yield* updater.quitAndInstall({ isSilent: true, isForceRunAfter: true });
+
+        assert.equal(NodeFS.readFileSync(victim, "utf8"), "precious-data");
+        assert.equal(NodeFS.readFileSync(appImage, "utf8"), "new-binary");
+
+        yield* flushImmediate();
+        assert.equal(appQuitMock.mock.calls.length, 1);
+      }).pipe(
+        Effect.provide(ElectronUpdater.layer),
+        Effect.provideService(HostProcessPlatform, "linux"),
+      ),
+    );
+
+    it.effect("sweeps stale staging directories from killed installs", () =>
+      Effect.gen(function* () {
+        const dir = trackTempDir();
+        const appImage = NodePath.join(dir, "T3-Code-x86_64.AppImage");
+        const installer = NodePath.join(dir, "pending.AppImage");
+        NodeFS.writeFileSync(appImage, "running-binary");
+        NodeFS.writeFileSync(installer, "new-binary");
+        const staleDir = NodePath.join(dir, ".t3-appimage-staging-deadbeef");
+        NodeFS.mkdirSync(staleDir);
+        NodeFS.writeFileSync(NodePath.join(staleDir, "pending.AppImage"), "stale-bytes");
+        process.env.APPIMAGE = appImage;
+        autoUpdaterMock.downloadedUpdateHelper = {
+          file: installer,
+          downloadedFileInfo: {
+            fileName: "T3-Code-x86_64.AppImage",
+            sha512: sha512Base64("new-binary"),
+          },
+        };
+
+        const updater = yield* ElectronUpdater.ElectronUpdater;
+        yield* updater.quitAndInstall({ isSilent: true, isForceRunAfter: true });
+
+        assert.equal(NodeFS.readFileSync(appImage, "utf8"), "new-binary");
+        assert.deepEqual(
+          NodeFS.readdirSync(dir).filter((entry) => entry.startsWith(".")),
+          [],
+        );
+      }).pipe(
+        Effect.provide(ElectronUpdater.layer),
+        Effect.provideService(HostProcessPlatform, "linux"),
+      ),
+    );
+
     it.effect("delegates to stock quitAndInstall when APPIMAGE is not set", () =>
       Effect.gen(function* () {
         const updater = yield* ElectronUpdater.ElectronUpdater;

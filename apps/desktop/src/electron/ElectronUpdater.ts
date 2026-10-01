@@ -143,6 +143,29 @@ const verifyAppImageBytes = (label: string, filePath: string, expectedSha512: st
   }
 };
 
+const APPIMAGE_STAGE_PREFIX = ".t3-appimage-staging-";
+
+// Best-effort hygiene: a SIGKILL between mkdtemp and cleanup leaves a staging directory
+// behind. Only our own distinctive prefix is swept, and a sweep failure never aborts.
+const sweepStaleAppImageStageDirs = (appImageDir: string): void => {
+  let entries: ReadonlyArray<string>;
+  try {
+    entries = NodeFS.readdirSync(appImageDir);
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    if (!entry.startsWith(APPIMAGE_STAGE_PREFIX)) {
+      continue;
+    }
+    try {
+      NodeFS.rmSync(NodePath.join(appImageDir, entry), { recursive: true, force: true });
+    } catch {
+      // Leftover staging dirs are inert: never executed, never renamed into place.
+    }
+  }
+};
+
 const quitAndInstallAppImage = (isForceRunAfter: boolean): void => {
   const logger = updaterLogger();
   const appImagePath = process.env.APPIMAGE ?? "";
@@ -156,24 +179,32 @@ const quitAndInstallAppImage = (isForceRunAfter: boolean): void => {
   logger.info(`Safe AppImage install of ${pending.installerPath} over ${appImagePath}`);
   verifyAppImageBytes("Downloaded AppImage", pending.installerPath, pending.sha512);
 
-  // Dot-prefixed temp in the AppImage directory: the final swap stays on one filesystem
-  // however the updater cache is mounted, and a retry overwrites the same path.
-  const stagedPath = NodePath.join(
-    NodePath.dirname(appImagePath),
-    `.${NodePath.basename(appImagePath)}.t3-pending`,
-  );
+  const appImageDir = NodePath.dirname(appImagePath);
+  sweepStaleAppImageStageDirs(appImageDir);
+
+  // Fresh private directory on the AppImage filesystem: mkdtemp names are unpredictable
+  // and mode 0700, so nothing can pre-plant a symlink at the staging path — copyFileSync
+  // would follow it and corrupt the link target. The final swap stays on one filesystem
+  // however the updater cache is mounted.
+  const stageDir = NodeFS.mkdtempSync(NodePath.join(appImageDir, APPIMAGE_STAGE_PREFIX));
+  const stagedPath = NodePath.join(stageDir, "pending.AppImage");
   try {
-    NodeFS.copyFileSync(pending.installerPath, stagedPath);
+    NodeFS.copyFileSync(pending.installerPath, stagedPath, NodeFS.constants.COPYFILE_EXCL);
     NodeFS.chmodSync(stagedPath, 0o755);
     verifyAppImageBytes("Staged AppImage", stagedPath, pending.sha512);
-    // Same directory, so this is an atomic rename(2): no copy, no partial file, no window
-    // where the launch path is missing. The old AppImage stays in place until this instant.
+    // Same filesystem, so this is an atomic rename(2): no copy, no partial file, no window
+    // where the launch path is missing. rename never follows symlinks: even a swapped
+    // destination is replaced, not traversed. The old AppImage stays until this instant.
     NodeFS.renameSync(stagedPath, appImagePath);
     verifyAppImageBytes("Installed AppImage", appImagePath, pending.sha512);
     logger.info(`Safe AppImage install verified at ${appImagePath}`);
-  } catch (error) {
-    NodeFS.rmSync(stagedPath, { force: true });
-    throw error;
+  } finally {
+    // Cleanup never fails the install; anything left behind is swept next time.
+    try {
+      NodeFS.rmSync(stageDir, { recursive: true, force: true });
+    } catch {
+      // Next install sweeps it.
+    }
   }
 
   // Any throw above aborts before quit, so DesktopUpdates can restart the backends and
