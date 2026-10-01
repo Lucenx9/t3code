@@ -140,7 +140,7 @@ it.layer(NodeServices.layer)("snoozed thread decider", (it) => {
     }),
   );
 
-  it.effect("re-emits idempotently for a duplicate snooze to the same wake time", () =>
+  it.effect("re-snoozing to the SAME wake time stamps fresh", () =>
     Effect.gen(function* () {
       const reEmit = yield* decideOrchestrationCommand({
         command: {
@@ -154,9 +154,11 @@ it.layer(NodeServices.layer)("snoozed thread decider", (it) => {
       const events = Array.isArray(reEmit) ? reEmit : [reEmit];
       expect(events).toHaveLength(1);
       if (events[0]?.type === "thread.snoozed") {
-        // Original snoozedAt preserved; updatedAt must not churn.
-        expect(events[0].payload.snoozedAt).toBe(SNOOZED_AT);
-        expect(events[0].payload.updatedAt).toBe(NOW);
+        // Fresh stamp resets the raised-hand baseline so a woken thread
+        // can be snoozed again to the same wake time.
+        expect(events[0].payload.snoozedAt).toBe(events[0].payload.updatedAt);
+        expect(events[0].payload.snoozedAt).not.toBe(SNOOZED_AT);
+        expect(events[0].payload.updatedAt).not.toBe(NOW);
       }
     }),
   );

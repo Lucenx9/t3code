@@ -160,6 +160,38 @@ describe("remote thread lifecycle commands", () => {
     );
   }
 
+  it.effect("re-snoozing to the same wake time restamps the optimistic snoozedAt", () =>
+    Effect.gen(function* () {
+      const h = yield* makeHarness();
+      const source = h.snapshotAtom(ENVIRONMENT_ID);
+      const initial = {
+        ...SNAPSHOT,
+        threads: [
+          {
+            ...SNAPSHOT.threads[0]!,
+            snoozedUntil: "2099-01-01T00:00:00.000Z",
+            snoozedAt: "2026-09-01T00:00:00.000Z",
+          },
+        ],
+      };
+      h.registry.set(source, initial);
+      const result = h.commands.snooze.run(h.registry, {
+        environmentId: ENVIRONMENT_ID,
+        input: {
+          threadId: THREAD_ID,
+          commandId: CommandId.make("snooze-again"),
+          snoozedUntil: "2099-01-01T00:00:00.000Z",
+        },
+      });
+      const preview = h.registry.get(h.visibleAtom)?.threads[0];
+      expect(preview?.snoozedUntil).toBe("2099-01-01T00:00:00.000Z");
+      expect(preview?.snoozedAt).not.toBe("2026-09-01T00:00:00.000Z");
+      const request = yield* Queue.take(h.requests);
+      yield* Deferred.succeed(request.reply, { sequence: 2 });
+      expect((yield* Effect.promise(() => result))._tag).toBe("Success");
+    }),
+  );
+
   it.effect("keeps the preview after acknowledgement until the matching shell update arrives", () =>
     Effect.gen(function* () {
       const h = yield* makeHarness();
