@@ -512,7 +512,8 @@ interface ExpectedAgentInput {
  *
  * `about:blank` stays out: Chromium skips browser-side navigation for it, so the
  * child copies the guest's `contextIsolation: false` preferences and Electron
- * gives no way to override them. Those popups keep loading in the preview tab.
+ * gives no way to override them. Those popups are denied without navigating,
+ * so the opener survives for the SDK fallback.
  *
  * Deliberately not `ElectronShell.parseSafeExternalUrl`: that also admits
  * `vscode://vscode-remote/...` deep links, which belong in `shell.openExternal`
@@ -553,14 +554,21 @@ const POPUP_WINDOW_OPTIONS = {
  * navigating the preview tab instead destroys the opener the popup has to
  * `postMessage` its result back to.
  *
+ * `"deny"` blocks a scripted `new-window` without touching the opener. This is
+ * for URLs that cannot be hardened in a popup, like `about:blank`: loading them
+ * in the preview tab would replace the opener, while a plain deny lets SDKs
+ * like MSAL fall back to redirect.
+ *
  * `target="_blank"` links arrive as a tab disposition and keep loading in the
  * preview tab, which is what people expect from a link inside a preview.
  */
 export const previewWindowOpenAction = (details: {
   readonly url: string;
   readonly disposition: Electron.HandlerDetails["disposition"];
-}): "popup" | "navigate" =>
-  details.disposition === "new-window" && isPopupUrl(details.url) ? "popup" : "navigate";
+}): "popup" | "navigate" | "deny" => {
+  if (details.disposition !== "new-window") return "navigate";
+  return isPopupUrl(details.url) ? "popup" : "deny";
+};
 
 export const isPreviewRefreshShortcut = (input: Electron.Input): boolean =>
   input.type === "keyDown" &&
@@ -2048,14 +2056,17 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         wc.ipc.on(RECORDING_INPUT_CHANNEL, recordingInput);
         wc.ipc.on(MOUSE_NAVIGATE_CHANNEL, mouseNavigate);
         wc.setWindowOpenHandler((details) => {
-          if (previewWindowOpenAction(details) === "popup") {
+          const openAction = previewWindowOpenAction(details);
+          if (openAction === "popup") {
             return { action: "allow", overrideBrowserWindowOptions: POPUP_WINDOW_OPTIONS };
           }
-          runFork(
-            attemptPromise({ operation: "openPreviewWindow", tabId, webContentsId: wc.id }, () =>
-              wc.loadURL(details.url),
-            ).pipe(Effect.ignore),
-          );
+          if (openAction === "navigate") {
+            runFork(
+              attemptPromise({ operation: "openPreviewWindow", tabId, webContentsId: wc.id }, () =>
+                wc.loadURL(details.url),
+              ).pipe(Effect.ignore),
+            );
+          }
           return { action: "deny" };
         });
         wc.on("did-create-window", windowCreated);

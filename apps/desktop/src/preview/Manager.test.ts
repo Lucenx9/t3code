@@ -161,20 +161,27 @@ describe("previewWindowOpenAction", () => {
     expect(PreviewManager.previewWindowOpenAction(details({ disposition: "background-tab" }))).toBe(
       "navigate",
     );
+    expect(
+      PreviewManager.previewWindowOpenAction(
+        details({ url: "about:blank", disposition: "foreground-tab" }),
+      ),
+    ).toBe("navigate");
   });
 
-  it("does not hand a window to schemes that cannot be hardened", () => {
+  it("denies scripted popups that cannot be hardened without navigating", () => {
     // A popup skips the `will-attach-webview` hardening, so it only gets a window
     // when its preferences can be overridden. Chromium copies the guest's
-    // preferences for `about:blank` and forbids overriding them.
+    // preferences for `about:blank` and forbids overriding them. Deny without
+    // navigating so the opener survives and SDKs like MSAL can fall back.
     for (const url of [
       "about:blank",
+      "",
       "javascript:alert(1)",
       "file:///etc/passwd",
       "vscode://vscode-remote/ssh-remote+box/tmp",
       "not a url",
     ]) {
-      expect(PreviewManager.previewWindowOpenAction(details({ url }))).toBe("navigate");
+      expect(PreviewManager.previewWindowOpenAction(details({ url }))).toBe("deny");
     }
   });
 });
