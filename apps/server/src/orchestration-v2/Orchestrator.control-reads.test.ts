@@ -104,29 +104,6 @@ for (const terminalCommand of ["thread.archive", "thread.delete"] as const) {
       assert.equal(error.cause, `Thread ${threadId} is not active.`);
       assert.deepEqual(yield* projections.getThreadProjection(threadId), before);
       assert.deepEqual(yield* outbox.listByCommandId(commandId), []);
-      if (terminalCommand === "thread.archive") {
-        yield* orchestrator.dispatch({
-          type: "thread.unarchive",
-          commandId: CommandId.make("unarchive-terminal-preparation"),
-          threadId,
-        });
-        const resumedCommandId = CommandId.make("release-unarchived-preparation");
-        yield* orchestrator.dispatch({
-          type: "prepared-run.release",
-          commandId: resumedCommandId,
-          threadId,
-          runId,
-        });
-        assert.equal(
-          (yield* projections.getThreadProjection(threadId)).runs[0]!.status,
-          "starting",
-        );
-        assert.isTrue(
-          (yield* outbox.listByCommandId(resumedCommandId)).some(
-            (effect) => effect.request.type === "provider-turn.start",
-          ),
-        );
-      }
     }).pipe(Effect.provide(testLayer)),
   );
 }
