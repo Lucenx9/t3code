@@ -619,10 +619,8 @@ it.effect("keeps delegated child pull-request links independent of the parent", 
       linkedChild.thread.pullRequests?.map((link) => link.number),
       [456],
     );
-    assert.deepEqual(
-      (yield* projections.getThreadProjection(parentThreadId)).thread.linkedPullRequest,
-      parentPullRequest,
-    );
-    assert.deepEqual(updatedParent.thread.pullRequests, parent.thread.pullRequests);
+    const parentAfterChildLink = yield* projections.getThreadProjection(parentThreadId);
+    assert.deepEqual(parentAfterChildLink.thread.linkedPullRequest, parentPullRequest);
+    assert.deepEqual(parentAfterChildLink.thread.pullRequests, parent.thread.pullRequests);
   }).pipe(Effect.provide(testLayer)),
 );
