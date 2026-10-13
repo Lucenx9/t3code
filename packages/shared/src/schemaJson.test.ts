@@ -58,6 +58,18 @@ Done.`),
   });
 
   it.each([
+    "[1/* https://example.com */2]",
+    "[1/* https://example.com */.5]",
+    "[tr/* https://example.com */ue]",
+  ])("rejects tokens separated by a block comment in %s", (input) => {
+    expect(() => decodeLenientJson(input)).toThrow();
+  });
+
+  it("preserves comment markers inside string values", () => {
+    expect(decodeLenientJson('"1/* https://example.com */2"')).toBe("1/* https://example.com */2");
+  });
+
+  it.each([
     '{ /* See https://example.com/config */ "enabled": true }',
     '{ "enabled": /* // this is still a block comment */ true }',
     '{ "enabled": true /* a "quoted" note with // markers */ }',

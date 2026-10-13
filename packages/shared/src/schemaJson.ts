@@ -168,7 +168,7 @@ const parseLenientJsonGetter = SchemaGetter.transformEffect((input: string) => {
   // The string alternation preserves quoted values.
   let stripped = input.replace(
     /("(?:[^"\\]|\\.)*")|\/\/[^\n]*|\/\*[\s\S]*?\*\//g,
-    (match, stringLiteral: string | undefined) => (stringLiteral ? match : ""),
+    (match, stringLiteral: string | undefined) => (stringLiteral ? match : " "),
   );
 
   // Strip trailing commas before `}` or `]`. The alternation preserves quoted
