@@ -164,15 +164,10 @@ export const formatSchemaError = (cause: Cause.Cause<Schema.SchemaError>) => {
 const decodeJsonString = Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown));
 
 const parseLenientJsonGetter = SchemaGetter.transformEffect((input: string) => {
-  // Strip single-line comments - alternation preserves quoted strings.
+  // Strip comments together so line-comment markers inside a block comment stay in that block.
+  // The string alternation preserves quoted values.
   let stripped = input.replace(
-    /("(?:[^"\\]|\\.)*")|\/\/[^\n]*/g,
-    (match, stringLiteral: string | undefined) => (stringLiteral ? match : ""),
-  );
-
-  // Strip multi-line comments.
-  stripped = stripped.replace(
-    /("(?:[^"\\]|\\.)*")|\/\*[\s\S]*?\*\//g,
+    /("(?:[^"\\]|\\.)*")|\/\/[^\n]*|\/\*[\s\S]*?\*\//g,
     (match, stringLiteral: string | undefined) => (stringLiteral ? match : ""),
   );
 

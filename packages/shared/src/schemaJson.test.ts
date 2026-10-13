@@ -57,6 +57,14 @@ Done.`),
     expect(() => decodeLenientJson('{ "enabled": true,, }')).toThrow();
   });
 
+  it.each([
+    '{ /* See https://example.com/config */ "enabled": true }',
+    '{ "enabled": /* // this is still a block comment */ true }',
+    '{ "enabled": true /* a "quoted" note with // markers */ }',
+  ])("preserves block comment boundaries in %s", (input) => {
+    expect(decodeLenientJson(input)).toEqual({ enabled: true });
+  });
+
   it("preserves commas before brackets inside string values", () => {
     // A comma inside a string value that happens to precede `}`/`]` must not
     // be stripped as if it were a trailing comma.
