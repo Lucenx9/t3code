@@ -20,6 +20,40 @@ function entry(
 }
 
 describe("dedupeChecks", () => {
+  it.each([
+    ["2026-10-16T12:00:00Z", "2026-10-16T12:00:00.500Z"],
+    ["2026-10-16T12:00:00+02:00", "2026-10-16T10:30:00Z"],
+    ["2026-10-16T12:00:00.0001Z", "2026-10-16T12:00:00.0002Z"],
+    ["2026-10-16T12:00:00.0001z", "2026-10-16T12:00:00.0002z"],
+    ["2026-10-16T12:00:00.00009Z", "2026-10-16T12:00:00.0001Z"],
+  ])("keeps the newer instant between %s and %s in either listing order", (older, newer) => {
+    const oldRun = entry("build", "success", { at: older });
+    const newRun = entry("build", "failure", { at: newer });
+
+    expect(
+      [
+        [oldRun, newRun],
+        [newRun, oldRun],
+      ].map((runs) => dedupeChecks(runs)[0]?.status),
+    ).toEqual(["failure", "failure"]);
+  });
+
+  it.each([
+    ["2026-10-16T12:00:00Z", "2026-10-16T12:00:00.000Z"],
+    ["2026-10-16T12:00:00Z", "2026-10-16T14:00:00+02:00"],
+  ])("takes the last copy for equal instants %s and %s", (first, second) => {
+    const forward = dedupeChecks([
+      entry("build", "success", { at: first }),
+      entry("build", "failure", { at: second }),
+    ]);
+    const reversed = dedupeChecks([
+      entry("build", "success", { at: second }),
+      entry("build", "failure", { at: first }),
+    ]);
+
+    expect([forward[0]?.status, reversed[0]?.status]).toEqual(["failure", "failure"]);
+  });
+
   it("keeps the newest run of a check the host listed twice", () => {
     const checks = dedupeChecks([
       entry("Prepare PR size config", "success", {
@@ -35,6 +69,15 @@ describe("dedupeChecks", () => {
     expect(checks.map((check) => [check.name, check.status])).toEqual([
       ["Prepare PR size config", "pending"],
     ]);
+  });
+
+  it("preserves text ordering when a host supplies an unparseable timestamp", () => {
+    expect(
+      dedupeChecks([
+        entry("build", "success", { at: "invalid-a" }),
+        entry("build", "failure", { at: "invalid-b" }),
+      ]).map((check) => check.status),
+    ).toEqual(["failure"]);
   });
 
   it("holds a check at the place it first appeared, so a re-run does not reshuffle the list", () => {

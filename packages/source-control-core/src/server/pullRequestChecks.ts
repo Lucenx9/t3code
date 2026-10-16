@@ -1,9 +1,25 @@
 import type { PullRequestCheck } from "@t3tools/contracts";
 
-/** ISO-8601 timestamps in UTC compare correctly as plain text, which is all the ordering needs. */
+// Parse whole seconds separately so sub-millisecond fractions keep their precision.
+function timestampParts(value: string) {
+  const fraction = /\.(\d+)(?=Z$|[+-]\d{2}:\d{2}$)/i.exec(value);
+  return {
+    time: Date.parse(fraction ? value.replace(fraction[0], "") : value),
+    fraction: fraction?.[1] ?? "",
+  };
+}
+
 function isAtLeastAsNew(candidate: string | null, kept: string | null): boolean {
   if (candidate === null) return kept === null;
-  return kept === null || candidate >= kept;
+  if (kept === null) return true;
+  const candidateParts = timestampParts(candidate);
+  const keptParts = timestampParts(kept);
+  if (Number.isNaN(candidateParts.time) || Number.isNaN(keptParts.time)) return candidate >= kept;
+  if (candidateParts.time !== keptParts.time) return candidateParts.time > keptParts.time;
+  const precision = Math.max(candidateParts.fraction.length, keptParts.fraction.length);
+  return (
+    candidateParts.fraction.padEnd(precision, "0") >= keptParts.fraction.padEnd(precision, "0")
+  );
 }
 
 /**
