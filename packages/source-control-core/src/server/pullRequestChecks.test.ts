@@ -26,6 +26,9 @@ describe("dedupeChecks", () => {
     ["2026-10-16T12:00:00.0001Z", "2026-10-16T12:00:00.0002Z"],
     ["2026-10-16T12:00:00.0001z", "2026-10-16T12:00:00.0002z"],
     ["2026-10-16T12:00:00.00009Z", "2026-10-16T12:00:00.0001Z"],
+    ["2024-02-28T23:59:59Z", "2024-02-29T00:00:00.0001Z"],
+    ["2000-02-28T23:59:59Z", "2000-02-29T00:00:00Z"],
+    ["2024-03-01T01:00:00Z", "2024-02-29T23:30:00-02:00"],
   ])("keeps the newer instant between %s and %s in either listing order", (older, newer) => {
     const oldRun = entry("build", "success", { at: older });
     const newRun = entry("build", "failure", { at: newer });
@@ -78,6 +81,23 @@ describe("dedupeChecks", () => {
         entry("build", "failure", { at: "invalid-b" }),
       ]).map((check) => check.status),
     ).toEqual(["failure"]);
+  });
+
+  it.each([
+    ["2026-02-30T00:00:00Z", "2026-03-01T00:00:00Z"],
+    ["2026-02-29T00:00:00Z", "2026-03-01T00:00:00Z"],
+    ["1900-02-29T00:00:00Z", "1900-03-01T00:00:00Z"],
+    ["2026-04-31T00:00:00.0001-02:00", "2026-05-01T00:00:00Z"],
+  ])("uses text fallback for impossible date %s", (malformed, valid) => {
+    const malformedRun = entry("build", "success", { at: malformed });
+    const validRun = entry("build", "failure", { at: valid });
+
+    expect(
+      [
+        [malformedRun, validRun],
+        [validRun, malformedRun],
+      ].map((runs) => dedupeChecks(runs)[0]?.status),
+    ).toEqual(["failure", "failure"]);
   });
 
   it("holds a check at the place it first appeared, so a re-run does not reshuffle the list", () => {

@@ -1,10 +1,20 @@
 import type { PullRequestCheck } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
+import * as Option from "effect/Option";
 
 // Parse whole seconds separately so sub-millisecond fractions keep their precision.
 function timestampParts(value: string) {
   const fraction = /\.(\d+)(?=Z$|[+-]\d{2}:\d{2}$)/i.exec(value);
+  // Date can normalize impossible days. Check the calendar date before applying the offset.
+  const datePart = value.split(/[Tt]/, 1)[0] ?? "";
+  const date = DateTime.make(`${datePart}T00:00:00Z`);
+  const parts = Option.isSome(date) ? DateTime.toPartsUtc(date.value) : null;
+  const validDate =
+    parts !== null &&
+    parts.month === Number(datePart.slice(-5, -3)) &&
+    parts.day === Number(datePart.slice(-2));
   return {
-    time: Date.parse(fraction ? value.replace(fraction[0], "") : value),
+    time: validDate ? Date.parse(fraction ? value.replace(fraction[0], "") : value) : Number.NaN,
     fraction: fraction?.[1] ?? "",
   };
 }
