@@ -15,10 +15,16 @@ import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
 const SINGLE_TEMPLATE_PATHS = [
   ".github/pull_request_template.md",
   ".github/PULL_REQUEST_TEMPLATE.md",
+  ".github/pull_request_template.txt",
+  ".github/PULL_REQUEST_TEMPLATE.txt",
   "pull_request_template.md",
   "PULL_REQUEST_TEMPLATE.md",
+  "pull_request_template.txt",
+  "PULL_REQUEST_TEMPLATE.txt",
   "docs/pull_request_template.md",
   "docs/PULL_REQUEST_TEMPLATE.md",
+  "docs/pull_request_template.txt",
+  "docs/PULL_REQUEST_TEMPLATE.txt",
 ] as const;
 
 const TEMPLATE_DIRECTORIES = [
@@ -128,10 +134,14 @@ it.effect("uses the first non-empty template in the configured path order", () =
   ),
 );
 
-it.effect.each(TEMPLATE_DIRECTORIES)("recognizes the $0 directory", (relativeDirectory) =>
+it.effect.each(
+  TEMPLATE_DIRECTORIES.flatMap((directory) =>
+    ["MD", "TXT"].map((extension) => `${directory}/template.${extension}`),
+  ),
+)("recognizes directory template $0", (relativePath) =>
   runWithTempDirectory((cwd) =>
     Effect.gen(function* () {
-      yield* writeTemplate(cwd, `${relativeDirectory}/template.MD`, "directory template");
+      yield* writeTemplate(cwd, relativePath, "directory template");
       yield* commitTemplates(cwd);
 
       const template = yield* detectTemplate(cwd);
@@ -163,6 +173,19 @@ it.effect.skipIf(!symlinksSupported)(
         assert.strictEqual(Option.getOrUndefined(template), "valid");
       }),
     ),
+);
+
+it.effect("does not guess between Markdown and text directory templates", () =>
+  runWithTempDirectory((cwd) =>
+    Effect.gen(function* () {
+      yield* writeTemplate(cwd, ".github/PULL_REQUEST_TEMPLATE/a.md", "first");
+      yield* writeTemplate(cwd, ".github/PULL_REQUEST_TEMPLATE/b.txt", "second");
+      yield* commitTemplates(cwd);
+
+      const template = yield* detectTemplate(cwd);
+      assert.isTrue(Option.isNone(template));
+    }),
+  ),
 );
 
 it.effect("does not guess between multiple directory templates", () =>

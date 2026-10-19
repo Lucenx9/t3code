@@ -5215,16 +5215,16 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
     }),
   );
 
-  it.effect("creates PR when one does not already exist", () =>
+  it.effect("creates PR with a text template when one does not already exist", () =>
     Effect.gen(function* () {
       const repoDir = yield* makeTempDir("t3code-git-manager-");
       yield* initRepo(repoDir);
       NodeFS.mkdirSync(NodePath.join(repoDir, ".github"));
       NodeFS.writeFileSync(
-        NodePath.join(repoDir, ".github", "pull_request_template.md"),
+        NodePath.join(repoDir, ".github", "pull_request_template.txt"),
         "## What changed?\n\n## Verification",
       );
-      yield* runGit(repoDir, ["add", ".github/pull_request_template.md"]);
+      yield* runGit(repoDir, ["add", ".github/pull_request_template.txt"]);
       yield* runGit(repoDir, ["commit", "-m", "Add pull request template"]);
       yield* runGit(repoDir, ["checkout", "-b", "feature-create-pr"]);
       const remoteDir = yield* createBareRemote();
