@@ -29,7 +29,13 @@ const TEMPLATE_DIRECTORIES = [
   "docs/PULL_REQUEST_TEMPLATE",
 ] as const;
 
-const TREE_PATHS = [...TEMPLATE_PATHS, ...TEMPLATE_DIRECTORIES] as const;
+// Recursive listings can exhaust the byte cap on unrelated documents and hide a valid template.
+const TREE_PATHS = [
+  ".",
+  ".github/",
+  "docs/",
+  ...TEMPLATE_DIRECTORIES.map((directory) => `${directory}/`),
+];
 
 type ExecuteGit = SourceControlHost.SourceControlHost["Service"]["git"]["execute"];
 
@@ -142,7 +148,7 @@ export const detect = Effect.fn("gitHubChangeRequestTemplate.detect")(function* 
     const result = yield* executeGit({
       operation: "gitHubChangeRequestTemplate.listTemplates",
       cwd,
-      args: ["ls-tree", "-r", "-z", "--full-tree", treeish, "--", ...TREE_PATHS],
+      args: ["ls-tree", "-z", "--full-tree", treeish, "--", ...TREE_PATHS],
       maxOutputBytes: TREE_LIST_MAX_BYTES,
       appendTruncationMarker: true,
     });
@@ -151,15 +157,17 @@ export const detect = Effect.fn("gitHubChangeRequestTemplate.detect")(function* 
     }
 
     const entries = parseTemplateTreeEntries(result.stdout);
-    const entriesByPath = new Map(entries.map((entry) => [entry.path, entry]));
     for (const templatePath of TEMPLATE_PATHS) {
-      const entry = entriesByPath.get(templatePath);
-      if (!entry) {
-        continue;
-      }
-      const template = yield* readTemplateBlob({ cwd, executeGit, entry });
-      if (Option.isSome(template)) {
-        return template;
+      const candidates = entries
+        .filter((entry) => entry.path.toLowerCase() === templatePath.toLowerCase())
+        .toSorted(
+          (left, right) => Number(right.path === templatePath) - Number(left.path === templatePath),
+        );
+      for (const entry of candidates) {
+        const template = yield* readTemplateBlob({ cwd, executeGit, entry });
+        if (Option.isSome(template)) {
+          return template;
+        }
       }
     }
 

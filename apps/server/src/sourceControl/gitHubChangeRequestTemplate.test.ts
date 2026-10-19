@@ -17,14 +17,20 @@ const SINGLE_TEMPLATE_PATHS = [
   ".github/PULL_REQUEST_TEMPLATE.md",
   ".github/pull_request_template.txt",
   ".github/PULL_REQUEST_TEMPLATE.txt",
+  ".github/PULL_REQUEST_TEMPLATE.TXT",
+  ".github/PuLl_ReQuEsT_TeMpLaTe.TxT",
   "pull_request_template.md",
   "PULL_REQUEST_TEMPLATE.md",
   "pull_request_template.txt",
   "PULL_REQUEST_TEMPLATE.txt",
+  "PULL_REQUEST_TEMPLATE.TXT",
+  "PuLl_ReQuEsT_TeMpLaTe.TxT",
   "docs/pull_request_template.md",
   "docs/PULL_REQUEST_TEMPLATE.md",
   "docs/pull_request_template.txt",
   "docs/PULL_REQUEST_TEMPLATE.txt",
+  "docs/PULL_REQUEST_TEMPLATE.TXT",
+  "docs/PuLl_ReQuEsT_TeMpLaTe.TxT",
 ] as const;
 
 const TEMPLATE_DIRECTORIES = [
@@ -97,6 +103,49 @@ it.effect.each(SINGLE_TEMPLATE_PATHS)("recognizes $0", (relativePath) =>
 
       const template = yield* detectTemplate(cwd);
       assert.strictEqual(Option.getOrUndefined(template), `template from ${relativePath}`);
+    }),
+  ),
+);
+
+it.effect.each([".github/PuLl_ReQuEsT_TeMpLaTe.MD", "docs/PULL_REQUEST_TEMPLATE.Md"])(
+  "recognizes Markdown case variant $0",
+  (relativePath) =>
+    runWithTempDirectory((cwd) =>
+      Effect.gen(function* () {
+        yield* writeTemplate(cwd, relativePath, "Markdown template");
+        yield* commitTemplates(cwd);
+
+        assert.strictEqual(Option.getOrUndefined(yield* detectTemplate(cwd)), "Markdown template");
+      }),
+    ),
+);
+
+it.effect("finds case variants from a repository subdirectory", () =>
+  runWithTempDirectory((cwd) =>
+    Effect.gen(function* () {
+      const path = yield* Path.Path;
+      yield* writeTemplate(cwd, ".github/Pull_Request_Template.TXT", "base template");
+      yield* writeTemplate(cwd, "nested/README.md", "project");
+      yield* commitTemplates(cwd);
+
+      assert.strictEqual(
+        Option.getOrUndefined(yield* detectTemplate(path.join(cwd, "nested"))),
+        "base template",
+      );
+    }),
+  ),
+);
+
+it.effect("does not let unrelated nested documents exhaust the template listing", () =>
+  runWithTempDirectory((cwd) =>
+    Effect.gen(function* () {
+      yield* writeTemplate(cwd, "docs/Pull_Request_Template.TXT", "docs template");
+      for (let index = 0; index < 600; index += 1) {
+        yield* writeTemplate(cwd, `docs/guides/${index}-${"a".repeat(180)}.md`, "guide");
+      }
+      yield* commitTemplates(cwd);
+
+      assert.strictEqual(Option.getOrUndefined(yield* detectTemplate(cwd)), "docs template");
     }),
   ),
 );

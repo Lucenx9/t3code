@@ -5221,10 +5221,10 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
       yield* initRepo(repoDir);
       NodeFS.mkdirSync(NodePath.join(repoDir, ".github"));
       NodeFS.writeFileSync(
-        NodePath.join(repoDir, ".github", "pull_request_template.txt"),
+        NodePath.join(repoDir, ".github", "PuLl_ReQuEsT_TeMpLaTe.TXT"),
         "## What changed?\n\n## Verification",
       );
-      yield* runGit(repoDir, ["add", ".github/pull_request_template.txt"]);
+      yield* runGit(repoDir, ["add", ".github/PuLl_ReQuEsT_TeMpLaTe.TXT"]);
       yield* runGit(repoDir, ["commit", "-m", "Add pull request template"]);
       yield* runGit(repoDir, ["checkout", "-b", "feature-create-pr"]);
       const remoteDir = yield* createBareRemote();
