@@ -136,6 +136,25 @@ it.effect("finds case variants from a repository subdirectory", () =>
   ),
 );
 
+it.effect.each([
+  ".github/pull_request_template.md",
+  ".github/PuLl_ReQuEsT_TeMpLaTe.TxT",
+  "pull_request_template.md",
+  "docs/pull_request_template.md",
+])("preserves $0 when unrelated direct documents exhaust discovery", (relativePath) =>
+  runWithTempDirectory((cwd) =>
+    Effect.gen(function* () {
+      yield* writeTemplate(cwd, relativePath, "GitHub template");
+      for (let index = 0; index < 600; index += 1) {
+        yield* writeTemplate(cwd, `docs/${index}-${"a".repeat(180)}.md`, "guide");
+      }
+      yield* commitTemplates(cwd);
+
+      assert.strictEqual(Option.getOrUndefined(yield* detectTemplate(cwd)), "GitHub template");
+    }),
+  ),
+);
+
 it.effect("does not let unrelated nested documents exhaust the template listing", () =>
   runWithTempDirectory((cwd) =>
     Effect.gen(function* () {

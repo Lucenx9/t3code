@@ -29,13 +29,7 @@ const TEMPLATE_DIRECTORIES = [
   "docs/PULL_REQUEST_TEMPLATE",
 ] as const;
 
-// Recursive listings can exhaust the byte cap on unrelated documents and hide a valid template.
-const TREE_PATHS = [
-  ".",
-  ".github/",
-  "docs/",
-  ...TEMPLATE_DIRECTORIES.map((directory) => `${directory}/`),
-];
+const TEMPLATE_LOCATIONS = [".github/", "", "docs/"] as const;
 
 type ExecuteGit = SourceControlHost.SourceControlHost["Service"]["git"]["execute"];
 
@@ -145,33 +139,51 @@ export const detect = Effect.fn("gitHubChangeRequestTemplate.detect")(function* 
   return yield* Effect.gen(function* () {
     // Worktree paths can be replaced between validation and open. Read regular blobs from the
     // committed base tree so repository-controlled symlinks and path races never reach the host filesystem.
-    const result = yield* executeGit({
-      operation: "gitHubChangeRequestTemplate.listTemplates",
-      cwd,
-      args: ["ls-tree", "-z", "--full-tree", treeish, "--", ...TREE_PATHS],
-      maxOutputBytes: TREE_LIST_MAX_BYTES,
-      appendTruncationMarker: true,
-    });
-    if (result.stdoutTruncated) {
-      return Option.none();
-    }
+    const listTemplates = (paths: ReadonlyArray<string>) =>
+      executeGit({
+        operation: "gitHubChangeRequestTemplate.listTemplates",
+        cwd,
+        args: ["ls-tree", "-z", "--full-tree", treeish, "--", ...paths],
+        maxOutputBytes: TREE_LIST_MAX_BYTES,
+        appendTruncationMarker: true,
+      });
 
-    const entries = parseTemplateTreeEntries(result.stdout);
-    for (const templatePath of TEMPLATE_PATHS) {
-      const candidates = entries
-        .filter((entry) => entry.path.toLowerCase() === templatePath.toLowerCase())
-        .toSorted(
-          (left, right) => Number(right.path === templatePath) - Number(left.path === templatePath),
-        );
-      for (const entry of candidates) {
-        const template = yield* readTemplateBlob({ cwd, executeGit, entry });
-        if (Option.isSome(template)) {
-          return template;
+    // A lower-priority directory must not exhaust an earlier template's listing budget.
+    for (const location of TEMPLATE_LOCATIONS) {
+      const templatePaths = TEMPLATE_PATHS.filter(
+        (path) => path.slice(0, path.lastIndexOf("/") + 1) === location,
+      );
+      let result = yield* listTemplates([location || "."]);
+      if (result.stdoutTruncated) {
+        result = yield* listTemplates(templatePaths);
+      }
+      if (result.stdoutTruncated) {
+        return Option.none();
+      }
+
+      const entries = parseTemplateTreeEntries(result.stdout);
+      for (const templatePath of templatePaths) {
+        const candidates = entries
+          .filter((entry) => entry.path.toLowerCase() === templatePath.toLowerCase())
+          .toSorted(
+            (left, right) =>
+              Number(right.path === templatePath) - Number(left.path === templatePath),
+          );
+        for (const entry of candidates) {
+          const template = yield* readTemplateBlob({ cwd, executeGit, entry });
+          if (Option.isSome(template)) {
+            return template;
+          }
         }
       }
     }
 
     for (const directory of TEMPLATE_DIRECTORIES) {
+      const result = yield* listTemplates([`${directory}/`]);
+      if (result.stdoutTruncated) {
+        return Option.none();
+      }
+      const entries = parseTemplateTreeEntries(result.stdout);
       const directoryTemplate = yield* readTemplateDirectory({
         cwd,
         executeGit,
