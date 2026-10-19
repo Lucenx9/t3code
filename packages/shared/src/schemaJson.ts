@@ -158,8 +158,7 @@ export const formatSchemaError = (cause: Cause.Cause<Schema.SchemaError>) => {
 const decodeJsonString = Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown));
 
 const parseLenientJsonGetter = SchemaGetter.transformEffect((input: string) => {
-  // Strip comments together so line-comment markers inside a block comment stay in that block.
-  // The string alternation preserves quoted values.
+  // Match comments together so URLs stay inside blocks; whitespace keeps adjacent tokens apart.
   let stripped = input.replace(
     /("(?:[^"\\]|\\.)*")|\/\/[^\n]*|\/\*[\s\S]*?\*\//g,
     (match, stringLiteral: string | undefined) => (stringLiteral ? match : " "),

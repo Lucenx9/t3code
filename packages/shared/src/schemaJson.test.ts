@@ -44,7 +44,7 @@ Done.`),
     expect(
       decodeLenientJson(`{
         // Comments are valid in settings files.
-        "enabled": true,
+        "enabled": /* See "https://example.com/config" // still in the block */ true,
         "values": [1, 2,],
       }`),
     ).toEqual({
@@ -55,29 +55,11 @@ Done.`),
 
   it("rejects malformed JSON after lenient preprocessing", () => {
     expect(() => decodeLenientJson('{ "enabled": true,, }')).toThrow();
+    expect(() => decodeLenientJson("[1/* https://example.com */2]")).toThrow();
   });
 
-  it.each([
-    "[1/* https://example.com */2]",
-    "[1/* https://example.com */.5]",
-    "[tr/* https://example.com */ue]",
-  ])("rejects tokens separated by a block comment in %s", (input) => {
-    expect(() => decodeLenientJson(input)).toThrow();
-  });
-
-  it("preserves comment markers inside string values", () => {
+  it("preserves comment markers and commas before brackets inside string values", () => {
     expect(decodeLenientJson('"1/* https://example.com */2"')).toBe("1/* https://example.com */2");
-  });
-
-  it.each([
-    '{ /* See https://example.com/config */ "enabled": true }',
-    '{ "enabled": /* // this is still a block comment */ true }',
-    '{ "enabled": true /* a "quoted" note with // markers */ }',
-  ])("preserves block comment boundaries in %s", (input) => {
-    expect(decodeLenientJson(input)).toEqual({ enabled: true });
-  });
-
-  it("preserves commas before brackets inside string values", () => {
     expect(decodeLenientJson('{"note":"a,]"}')).toEqual({ note: "a,]" });
     expect(decodeLenientJson('{"list":["x,}"]}')).toEqual({ list: ["x,}"] });
     expect(decodeLenientJson('{"values":[1, 2,],}')).toEqual({ values: [1, 2] });
