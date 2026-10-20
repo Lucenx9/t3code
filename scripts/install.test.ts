@@ -9,10 +9,16 @@ import * as NodePath from "node:path";
 import { describe, expect, it } from "vite-plus/test";
 
 describe.skipIf(HostProcess.Platform.defaultValue() !== "linux")("installer terminal", () => {
-  it.each([false, true])(
-    "preserves download and install behavior (HTTP failure: %s)",
-    async (fail) => {
+  it.each([
+    { fail: false, homeName: "home" },
+    { fail: true, homeName: "home" },
+    { fail: false, homeName: "home\\data" },
+    { fail: false, homeName: "home\ndata" },
+  ])(
+    "preserves download and install behavior (HTTP failure: $fail, home: $homeName)",
+    async ({ fail, homeName }) => {
       const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-install-progress-"));
+      const t3Home = NodePath.join(root, homeName);
       const version = "1.2.3";
       const stem = `t3-${version}-linux-${HostProcess.Architecture.defaultValue()}`;
       const archiveName = `${stem}.tar.gz`;
@@ -60,7 +66,7 @@ describe.skipIf(HostProcess.Platform.defaultValue() !== "linux")("installer term
           TERM: "xterm",
           NO_COLOR: "1",
           T3CODE_VERSION: version,
-          T3CODE_HOME: NodePath.join(root, "home"),
+          T3CODE_HOME: t3Home,
           T3CODE_INSTALL_BIN_DIR: NodePath.join(root, "bin"),
           T3CODE_RELEASE_BASE_URL: `http://127.0.0.1:${address.port}`,
         },
@@ -80,7 +86,7 @@ describe.skipIf(HostProcess.Platform.defaultValue() !== "linux")("installer term
           child.on("error", reject);
           child.on("close", resolve);
         });
-        const versions = NodePath.join(root, "home/runtime/versions");
+        const versions = NodePath.join(t3Home, "runtime/versions");
         if (fail) {
           expect(code).not.toBe(0);
           expect(output).toContain("500");
@@ -88,7 +94,7 @@ describe.skipIf(HostProcess.Platform.defaultValue() !== "linux")("installer term
           expect(output).not.toContain("Installed T3 Code");
           expect(await NodeFSP.readdir(versions)).toEqual([]);
         } else {
-          expect(code).toBe(0);
+          expect(code, output).toBe(0);
           expect(sawPartialProgress).toBe(true);
           expect(output).toContain("100%");
           expect(output).toContain("0.1 / 0.1 MB");
@@ -102,9 +108,9 @@ describe.skipIf(HostProcess.Platform.defaultValue() !== "linux")("installer term
             }).trim(),
           ).toBe("t3 v1.2.3");
           expect(await NodeFSP.readdir(versions)).toEqual([version]);
-          expect(
-            await NodeFSP.readFile(NodePath.join(root, "home/runtime/launchers"), "utf8"),
-          ).toBe(`${NodePath.join(root, "bin/t3")}\n`);
+          expect(await NodeFSP.readFile(NodePath.join(t3Home, "runtime/launchers"), "utf8")).toBe(
+            `${NodePath.join(root, "bin/t3")}\n`,
+          );
         }
       } finally {
         if (child.exitCode === null) child.kill();
