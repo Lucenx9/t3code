@@ -35,6 +35,7 @@ import {
   START_PICK_CHANNEL,
 } from "./GuestProtocol.ts";
 const OVERLAY_ATTRIBUTE = "data-t3code-annotation-ui";
+const INPUT_LAYER_ATTRIBUTE = "data-t3code-annotation-input";
 const Z_INDEX_OVERLAY = 2147483646;
 const PRIMARY = "var(--t3-primary)";
 const PRIMARY_FILL = "color-mix(in srgb, var(--t3-primary) 10%, transparent)";
@@ -252,15 +253,12 @@ function unionRects(
   const top = Math.min(...rects.map((rect) => rect.y));
   const right = Math.max(...rects.map((rect) => rect.x + rect.width));
   const bottom = Math.max(...rects.map((rect) => rect.y + rect.height));
-  const x = Math.max(0, left - padding);
-  const y = Math.max(0, top - padding);
-  const maxWidth = Math.max(1, window.innerWidth - x);
-  const maxHeight = Math.max(1, window.innerHeight - y);
+  // Main clips to the captured viewport; clipping here would lose offscreen bounds.
   return {
-    x,
-    y,
-    width: Math.min(maxWidth, right - left + padding * 2),
-    height: Math.min(maxHeight, bottom - top + padding * 2),
+    x: left - padding,
+    y: top - padding,
+    width: right - left + padding * 2,
+    height: bottom - top + padding * 2,
   };
 }
 
@@ -271,7 +269,7 @@ function isAnnotationNode(element: Element): boolean {
 function pickFromPoint(clientX: number, clientY: number): Element | null {
   for (const candidate of document.elementsFromPoint(clientX, clientY)) {
     if (!(candidate instanceof Element)) continue;
-    if (isAnnotationNode(candidate)) continue;
+    if (isAnnotationNode(candidate) || candidate.hasAttribute(INPUT_LAYER_ATTRIBUTE)) continue;
     if (candidate === document.documentElement || candidate === document.body) continue;
     return candidate;
   }
@@ -639,7 +637,18 @@ function startAnnotation(sendEnabled: boolean): void {
   const strokes: PreviewAnnotationStrokeTarget[] = [];
   const styleChanges = new Map<string, PreviewAnnotationStyleChange>();
   const toolButtons = new Map<AnnotationTool, HTMLButtonElement>();
-  let tool: AnnotationTool = "select";
+  // Chromium draws a PDF in its own viewer frame, so pointer and key input over it
+  // never reaches this document. A transparent layer above the viewer catches the
+  // pointer and takes focus for Escape and the tool keys. A PDF has no elements to
+  // select, so it starts on Region.
+  const isPdf = document.contentType === "application/pdf";
+  const inputLayer = isPdf ? document.createElement("div") : null;
+  if (inputLayer) {
+    inputLayer.setAttribute(INPUT_LAYER_ATTRIBUTE, "");
+    inputLayer.tabIndex = -1;
+    inputLayer.style.cssText = `position:fixed;inset:0;z-index:${Z_INDEX_OVERLAY - 1};cursor:crosshair;outline:none`;
+  }
+  let tool: AnnotationTool = isPdf ? "marquee" : "select";
   let dragStart: PreviewAnnotationPoint | null = null;
   let activeStroke: { target: PreviewAnnotationStrokeTarget; path: SVGPathElement } | null = null;
   let pendingCapture = false;
@@ -1359,6 +1368,7 @@ function startAnnotation(sendEnabled: boolean): void {
     ipcRenderer.off(ANNOTATION_CAPTURED_CHANNEL, onCaptured);
     document.documentElement.removeAttribute("data-t3code-annotation-tool");
     cursorStyle.remove();
+    inputLayer?.remove();
     host.remove();
     activeSession = null;
     if (notifyMain) ipcRenderer.send(ELEMENT_PICKED_CHANNEL, null);
@@ -1439,7 +1449,7 @@ function startAnnotation(sendEnabled: boolean): void {
           annotation,
           screenshotRect,
           submission === "send" && !sendEnabled ? "attach" : submission,
-          // Main crops a full-page capture, whose pixels are CSS px × this.
+          // Main crops a viewport capture, whose pixels are CSS px × this.
           window.devicePixelRatio,
         );
       })
@@ -1470,6 +1480,10 @@ function startAnnotation(sendEnabled: boolean): void {
   window.addEventListener("resize", repaint, { passive: true });
   ipcRenderer.on(CANCEL_PICK_CHANNEL, onCancel);
   ipcRenderer.on(ANNOTATION_CAPTURED_CHANNEL, onCaptured);
+  if (inputLayer) {
+    document.documentElement.appendChild(inputLayer);
+    inputLayer.focus({ preventScroll: true });
+  }
   document.documentElement.appendChild(host);
   rootResizeObserver.observe(document.documentElement);
   refreshToolButtons();

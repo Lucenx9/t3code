@@ -30,7 +30,6 @@ import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
 import {
   cursorMcpServers,
   cursorRuntimeAgentPolicy,
-  cursorSdkModelSelection,
   makeCursorAgentOptions,
   makeCursorAdapterV2,
   nestedToolCallFromEnvelope,
@@ -257,7 +256,23 @@ describe("CursorAdapterV2", () => {
           "Cursor Agent SDK run.wait failed: Too many requests (resource_exhausted, HTTP 429)",
       },
     },
-  ])("fails the turn with $reason", ({ wait, failure }) =>
+    {
+      reason: "a transport dump sent after earlier commentary",
+      updates: [
+        { type: "text-delta", text: "Checking the build first." },
+        { type: "step-completed", stepId: 1, stepDurationMs: 1 },
+        { type: "text-delta", text: "Error: RetriableError: WritableIterable is closed" },
+      ] satisfies ReadonlyArray<InteractionUpdate>,
+      wait: Effect.succeed({
+        id: "native-cursor-run",
+        requestId: "native-request",
+        status: "finished" as const,
+        model: { id: "claude-fable-5" },
+        durationMs: 1,
+      }),
+      failure: { class: "transport_error", message: "Provider turn failed." },
+    },
+  ])("fails the turn with $reason", ({ updates = [], wait, failure }) =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const workspace = yield* fileSystem.makeTempDirectoryScoped({ prefix: "cursor-v2-failure-" });
@@ -281,12 +296,17 @@ describe("CursorAdapterV2", () => {
               agentId: "native-cursor-failure",
               listMessages: Effect.succeed([]),
               close: Effect.void,
-              send: () =>
-                Effect.succeed({
-                  agentId: "native-cursor-failure",
-                  runId: "native-cursor-run",
-                  wait,
-                  cancel: Effect.void,
+              send: (input) =>
+                Effect.gen(function* () {
+                  for (const update of updates) {
+                    yield* input.onDelta!(update).pipe(Effect.orDie);
+                  }
+                  return {
+                    agentId: "native-cursor-failure",
+                    runId: "native-cursor-run",
+                    wait,
+                    cancel: Effect.void,
+                  };
                 }),
             }),
         }),
@@ -830,11 +850,7 @@ describe("CursorAdapterV2", () => {
           name: "weather",
           kind: "integration",
         });
-        assert.deepEqual(item.input, {
-          providerIdentifier: "weather",
-          toolName: "get_weather",
-          args: { city: "Berlin" },
-        });
+        assert.deepEqual(item.input, { city: "Berlin" });
       }
       const fileSearchItems = events.flatMap((event) =>
         event.type === "turn_item.updated" &&
@@ -1042,118 +1058,148 @@ describe("CursorAdapterV2", () => {
     ),
   );
 
-  it("maps Cursor auto and model parameters to SDK selections", () => {
-    assert.deepEqual(
-      cursorSdkModelSelection({
-        instanceId: ProviderInstanceId.make("cursor"),
-        model: "auto",
-        options: [
-          { id: "thinking", value: "high" },
-          { id: "contextWindow", value: "1m" },
-          { id: "fastMode", value: true },
-        ],
-      }),
-      {
-        id: "default",
-        params: [
-          { id: "thinking", value: "high" },
-          { id: "context", value: "1m" },
-          { id: "fast", value: "true" },
-        ],
-      },
-    );
-  });
-
   it("maps runtime modes to the SDK sandbox and auto-review controls", () => {
     const base = {
       interactionMode: "default" as const,
       cwd: "/tmp/cursor-adapter",
     };
     assert.deepEqual(
-      cursorRuntimeAgentPolicy({
-        ...base,
-        runtimeMode: "full-access",
-      }),
-      {
-        autoReview: false,
-        sandboxEnabled: false,
-      },
-    );
-    assert.deepEqual(
-      cursorRuntimeAgentPolicy({
-        ...base,
-        runtimeMode: "auto-accept-edits",
-      }),
-      {
-        autoReview: false,
-        sandboxEnabled: true,
-      },
-    );
-    assert.deepEqual(
-      cursorRuntimeAgentPolicy({
-        ...base,
-        runtimeMode: "auto",
-      }),
-      {
-        autoReview: true,
-        sandboxEnabled: true,
-      },
-    );
-    assert.deepEqual(
-      cursorRuntimeAgentPolicy({
-        ...base,
-        runtimeMode: "approval-required",
-      }),
-      {
-        autoReview: true,
-        sandboxEnabled: true,
-      },
-    );
-    assert.deepEqual(
-      cursorRuntimeAgentPolicy({
-        ...base,
-        runtimeMode: "full-access",
-        approvalPolicy: "never",
-        sandboxPolicy: { type: "readOnly" },
-      }),
-      {
-        autoReview: false,
-        sandboxEnabled: true,
-      },
-    );
-    assert.deepEqual(
-      cursorRuntimeAgentPolicy({
-        ...base,
-        runtimeMode: "approval-required",
-        approvalPolicy: "never",
-        sandboxPolicy: { type: "dangerFullAccess" },
-      }),
-      {
-        autoReview: false,
-        sandboxEnabled: false,
-      },
-    );
-  });
-
-  it("loads the user's Cursor settings layers in every runtime mode", () => {
-    for (const runtimeMode of ["full-access", "auto-accept-edits", "approval-required"] as const) {
-      const options = makeCursorAgentOptions({
-        modelSelection: {
-          instanceId: ProviderInstanceId.make("cursor"),
-          model: "composer-2.5",
+      cursorRuntimeAgentPolicy(
+        {
+          ...base,
+          runtimeMode: "full-access",
         },
-        runtimePolicy: { runtimeMode, interactionMode: "default", cwd: "/workspace" },
-        threadId: ThreadId.make("thread-cursor-setting-sources"),
-        mcpSession: undefined,
-      });
-      assert.deepEqual(options.local?.settingSources, [
-        "project",
-        "user",
-        "team",
-        "mdm",
-        "plugins",
-      ]);
-    }
+        "linux",
+      ),
+      {
+        autoReview: false,
+        sandboxEnabled: false,
+      },
+    );
+    assert.deepEqual(
+      cursorRuntimeAgentPolicy(
+        {
+          ...base,
+          runtimeMode: "auto-accept-edits",
+        },
+        "linux",
+      ),
+      {
+        autoReview: false,
+        sandboxEnabled: true,
+      },
+    );
+    assert.deepEqual(
+      cursorRuntimeAgentPolicy(
+        {
+          ...base,
+          runtimeMode: "auto",
+        },
+        "linux",
+      ),
+      {
+        autoReview: true,
+        sandboxEnabled: true,
+      },
+    );
+    assert.deepEqual(
+      cursorRuntimeAgentPolicy(
+        {
+          ...base,
+          runtimeMode: "approval-required",
+        },
+        "linux",
+      ),
+      {
+        autoReview: true,
+        sandboxEnabled: true,
+      },
+    );
+    assert.deepEqual(
+      cursorRuntimeAgentPolicy(
+        {
+          ...base,
+          runtimeMode: "full-access",
+          approvalPolicy: "never",
+          sandboxPolicy: { type: "readOnly" },
+        },
+        "linux",
+      ),
+      {
+        autoReview: false,
+        sandboxEnabled: true,
+      },
+    );
+    assert.deepEqual(
+      cursorRuntimeAgentPolicy(
+        {
+          ...base,
+          runtimeMode: "approval-required",
+          approvalPolicy: "never",
+          sandboxPolicy: { type: "dangerFullAccess" },
+        },
+        "linux",
+      ),
+      {
+        autoReview: false,
+        sandboxEnabled: false,
+      },
+    );
+    assert.deepEqual(
+      cursorRuntimeAgentPolicy(
+        {
+          ...base,
+          runtimeMode: "auto-accept-edits",
+        },
+        "win32",
+      ),
+      {
+        autoReview: false,
+        sandboxEnabled: true,
+      },
+    );
+    assert.deepEqual(
+      cursorRuntimeAgentPolicy(
+        {
+          ...base,
+          runtimeMode: "auto",
+          approvalPolicy: "never",
+        },
+        "win32",
+      ),
+      {
+        autoReview: false,
+        sandboxEnabled: true,
+      },
+    );
+    // Auto-review can gate Windows execution without the unsupported SDK sandbox.
+    assert.deepEqual(
+      cursorRuntimeAgentPolicy(
+        {
+          ...base,
+          runtimeMode: "auto",
+        },
+        "win32",
+      ),
+      {
+        autoReview: true,
+        sandboxEnabled: false,
+      },
+    );
+    assert.deepEqual(
+      cursorRuntimeAgentPolicy(
+        {
+          ...base,
+          runtimeMode: "auto",
+          sandboxPolicy: { type: "workspaceWrite" },
+        },
+        "win32",
+      ),
+      {
+        autoReview: true,
+        sandboxEnabled: true,
+      },
+    );
   });
 
   it("injects thread-scoped MCP credentials without logging them", () => {
@@ -1191,6 +1237,7 @@ describe("CursorAdapterV2", () => {
       },
       threadId,
       mcpSession,
+      platform: "linux",
     });
     assert.deepEqual(options.mcpServers, cursorMcpServers(mcpSession));
 

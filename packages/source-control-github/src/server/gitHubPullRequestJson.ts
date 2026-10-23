@@ -56,9 +56,12 @@ import type {
   PullRequestCheckContexts,
   PullRequestCore,
   PullRequestFilesViewed,
+  PullRequestFileStats,
   PullRequestHeads,
   PullRequestPreview as PullRequestPreviewQuery,
   PullRequestSubject,
+  RepositoryAuthors,
+  RepositoryLabels,
   ReviewerCandidates,
   ViewerPermissions,
 } from "./pullRequestReads.graphql.ts";
@@ -1137,11 +1140,13 @@ export function toPullRequestCore(result: PullRequestCore.Result): GitHubPullReq
       canDeleteBranch: toCanWrite(pr.headRepository?.viewerPermission) && pr.headRef !== null,
       canTriage: toCanTriage(repository.viewerPermission),
       ...toPullRequestViewerFields(pr),
+      canMergeNow: IMMEDIATELY_MERGEABLE.has(pr.mergeStateStatus),
       mergeCapabilities: {
         merge: repository.mergeCommitAllowed,
         squash: repository.squashMergeAllowed,
         rebase: repository.rebaseMergeAllowed,
       },
+      autoMergeAllowed: repository.autoMergeAllowed,
     },
     comparison:
       pr.state !== "OPEN" || pr.baseRef?.compare == null
@@ -1507,8 +1512,16 @@ export function toReviewThreadCommentsPage(result: ReviewThreadComments.Result):
 
 export interface GitHubRepositoryAccess {
   readonly mergeCapabilities: PullRequestMergeCapabilities;
+  readonly autoMergeAllowed: boolean;
   readonly canWrite: boolean;
 }
+
+/** States in which `gh pr merge --auto` merges at once instead of arming auto-merge. */
+export const IMMEDIATELY_MERGEABLE: ReadonlySet<string> = new Set([
+  "CLEAN",
+  "HAS_HOOKS",
+  "UNSTABLE",
+]);
 
 /**
  * GitHub answers null only to a GitHub App installation, and no API says what an installation
@@ -1647,6 +1660,36 @@ export function toLabelCandidates(
   };
 }
 
+export function toRepositoryLabels(
+  result: RepositoryLabels.Result,
+): { readonly items: ReadonlyArray<PullRequestLabel>; readonly truncated: boolean } | null {
+  const repository = result.repository;
+  if (repository == null) return null;
+  return {
+    items: nodesOf(repository.labels).flatMap((node) => {
+      const name = trimmed(node.name);
+      return name === null ? [] : [{ name, color: trimmed(node.color) }];
+    }),
+    truncated: repository.labels?.pageInfo.hasNextPage === true,
+  };
+}
+
+export function toRepositoryAuthors(
+  result: RepositoryAuthors.Result,
+): { readonly items: ReadonlyArray<PullRequestActor>; readonly truncated: boolean } | null {
+  const repository = result.repository;
+  if (repository == null) return null;
+  return {
+    items: nodesOf(repository.mentionableUsers).flatMap((node) => {
+      const login = trimmed(node.login);
+      return login === null
+        ? []
+        : [{ login, name: trimmed(node.name), avatarUrl: trimmed(node.avatarUrl) }];
+    }),
+    truncated: repository.mentionableUsers.pageInfo.hasNextPage,
+  };
+}
+
 export function buildLabelRequest(labels: ReadonlyArray<string>): {
   readonly labels: ReadonlyArray<string>;
 } {
@@ -1665,6 +1708,8 @@ export interface GitHubViewerAccess {
    * something to update" at once. Absent where the comparison was not read.
    */
   readonly canUpdateBranch?: boolean;
+  /** Detail-only readiness; omitted by the lightweight action permission read. */
+  readonly canMergeNow?: boolean;
 }
 
 /** Null for a repository the viewer cannot see. */
@@ -1679,6 +1724,7 @@ export function toViewerPermissions(
       squash: repository.squashMergeAllowed,
       rebase: repository.rebaseMergeAllowed,
     },
+    autoMergeAllowed: repository.autoMergeAllowed,
     canWrite: toCanWrite(repository.viewerPermission),
     canDeleteBranch: toCanWrite(repository.pullRequest?.headRepository?.viewerPermission),
     canTriage: toCanTriage(repository.viewerPermission),
@@ -1788,6 +1834,29 @@ export function toPullRequestFilesViewedPage(
       node.path.length === 0
         ? []
         : [{ path: node.path, state: toFileViewedState(node.viewerViewedState) }],
+    ),
+    nextCursor: nextCursorOf(files?.pageInfo),
+  };
+}
+
+export interface GitHubPullRequestFileStat {
+  readonly path: string;
+  readonly additions: number;
+  readonly deletions: number;
+}
+
+export interface GitHubPullRequestFileStatsPage {
+  readonly files: ReadonlyArray<GitHubPullRequestFileStat>;
+  readonly nextCursor: string | null;
+}
+
+export function toPullRequestFileStatsPage(
+  result: PullRequestFileStats.Result,
+): GitHubPullRequestFileStatsPage {
+  const files = result.repository?.pullRequest?.files;
+  return {
+    files: nodesOf(files).flatMap(({ path, additions, deletions }) =>
+      path.length === 0 ? [] : [{ path, additions, deletions }],
     ),
     nextCursor: nextCursorOf(files?.pageInfo),
   };

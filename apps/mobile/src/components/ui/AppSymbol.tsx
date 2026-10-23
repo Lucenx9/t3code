@@ -9,6 +9,7 @@ import IconAlertCircle from "@tabler/icons-react-native/IconAlertCircle";
 import IconAlertTriangle from "@tabler/icons-react-native/IconAlertTriangle";
 import IconApps from "@tabler/icons-react-native/IconApps";
 import IconArchive from "@tabler/icons-react-native/IconArchive";
+import IconCalendarClock from "@tabler/icons-react-native/IconCalendarClock";
 import IconArrowBackUp from "@tabler/icons-react-native/IconArrowBackUp";
 import IconArrowDown from "@tabler/icons-react-native/IconArrowDown";
 import IconArrowForwardUp from "@tabler/icons-react-native/IconArrowForwardUp";
@@ -23,6 +24,7 @@ import IconArrowUpRightCircle from "@tabler/icons-react-native/IconArrowUpRightC
 import IconArrowsLeftRight from "@tabler/icons-react-native/IconArrowsLeftRight";
 import IconArrowsDiagonal2 from "@tabler/icons-react-native/IconArrowsDiagonal2";
 import IconArrowsMinimize from "@tabler/icons-react-native/IconArrowsMinimize";
+import IconBan from "@tabler/icons-react-native/IconBan";
 import IconBellRinging from "@tabler/icons-react-native/IconBellRinging";
 import IconBolt from "@tabler/icons-react-native/IconBolt";
 import IconBox from "@tabler/icons-react-native/IconBox";
@@ -37,6 +39,7 @@ import IconChevronLeft from "@tabler/icons-react-native/IconChevronLeft";
 import IconChevronRight from "@tabler/icons-react-native/IconChevronRight";
 import IconChevronUp from "@tabler/icons-react-native/IconChevronUp";
 import IconCircle from "@tabler/icons-react-native/IconCircle";
+import IconCircleFilled from "@tabler/icons-react-native/IconCircleFilled";
 import IconCircleCheck from "@tabler/icons-react-native/IconCircleCheck";
 import IconCircleDashed from "@tabler/icons-react-native/IconCircleDashed";
 import IconCircleDot from "@tabler/icons-react-native/IconCircleDot";
@@ -174,9 +177,11 @@ const ANDROID_ICON_BY_SF_SYMBOL = {
   "checkmark.circle": IconCircleCheck,
   "checkmark.circle.fill": IconCircleCheck,
   circle: IconCircle,
+  "circle.fill": IconCircleFilled,
   "circle.dashed": IconCircleDashed,
   "circle.inset.filled": IconCircleDot,
   "circle.dashed.inset.filled": IconCircleDot,
+  "calendar.badge.clock": IconCalendarClock,
   clock: IconClock,
   timer: IconClock,
   ticket: IconTicket,
@@ -236,6 +241,7 @@ const ANDROID_ICON_BY_SF_SYMBOL = {
   play: IconPlayerPlay,
   plus: IconPlus,
   minus: IconMinus,
+  "slash.circle": IconBan,
   "qrcode.viewfinder": IconQrcode,
   "point.3.connected.trianglepath.dotted": IconNetwork,
   "point.topleft.down.curvedto.point.bottomright.up": IconGitMerge,

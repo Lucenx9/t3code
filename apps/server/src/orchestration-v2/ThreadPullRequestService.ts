@@ -23,6 +23,7 @@ import * as Schedule from "effect/Schedule";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
+import * as BackgroundPolicy from "../background/BackgroundPolicy.ts";
 import * as GitManager from "../git/GitManager.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
@@ -63,7 +64,7 @@ function pullRequestMatchesProject(
   );
 }
 
-export const resolveProjectForPullRequestDiscovery = Effect.fn(
+const resolveProjectForPullRequestDiscovery = Effect.fn(
   "ThreadPullRequestServiceV2.resolveProject",
 )(function* (
   project: OrchestrationProjectShell,
@@ -106,6 +107,7 @@ export const make = Effect.gen(function* () {
   const repositoryIdentities = yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
   const crypto = yield* Crypto.Crypto;
   const fileSystem = yield* FileSystem.FileSystem;
+  const backgroundPolicy = yield* BackgroundPolicy.BackgroundPolicy;
   const pendingBackfill = new Map<ThreadId, number>();
 
   const finishBackfill = (threads: ReadonlyArray<Pick<OrchestrationV2ThreadShell, "id">>) => {
@@ -395,6 +397,9 @@ export const make = Effect.gen(function* () {
         yield* worker.enqueue({ threadId: null, refresh: false, backfill: true });
         yield* worker.drain;
         yield* Effect.gen(function* () {
+          // The sweep only catches pull requests opened outside a turn, which
+          // nobody sees without a client. Thread events still refresh headless work.
+          if (!(yield* backgroundPolicy.shouldRunOpportunisticWork)) return;
           yield* worker.enqueue({ threadId: null, refresh: false });
           yield* worker.drain;
         }).pipe(Effect.repeat(Schedule.spaced("1 minute")), Effect.delay("1 minute"));
