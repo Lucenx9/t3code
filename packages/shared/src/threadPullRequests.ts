@@ -1,15 +1,12 @@
 import type {
   OrchestrationV2AppThread,
-  RepositoryIdentity,
-  SourceControlProviderKind,
   ThreadLinkedPullRequest,
   ThreadPullRequestKey,
   ThreadPullRequestLink,
 } from "@t3tools/contracts";
 
-import { pullRequestHostOf } from "@t3tools/contracts";
 import { parseChangeRequestUrl } from "./changeRequestUrl.ts";
-import { canonicalRepositoryKey, sourceControlRepositorySelector } from "./sourceControl.ts";
+import { canonicalRepositoryKey } from "./sourceControl.ts";
 
 type ThreadPullRequestKeySource = ThreadPullRequestKey & {
   readonly authority?: string;
@@ -159,53 +156,6 @@ export function resolveThreadCurrentPullRequestLink(
   return current.kind === "single" ? current.link : current.top;
 }
 
-export function legacyLinkedPullRequestOf(
-  links: ReadonlyArray<ThreadPullRequestLink>,
-  projectId: ThreadLinkedPullRequest["projectId"],
-  identity: RepositoryIdentity | null | undefined,
-): ThreadLinkedPullRequest | null {
-  if (!identity) return null;
-  const host = pullRequestHostOf(identity, identity.provider as SourceControlProviderKind);
-  if (typeof host !== "string") return null;
-  const repository = sourceControlRepositorySelector(identity);
-  if (repository === null) return null;
-  const azureKey =
-    identity.provider === "azure-devops"
-      ? canonicalRepositoryKey(identity.canonicalKey.toLowerCase())
-      : null;
-  const link = resolveThreadCurrentPullRequestLink(
-    links.filter((link) => {
-      if (azureKey !== null) {
-        const key = legacyThreadPullRequestKey(link, link.host);
-        return canonicalRepositoryKey(`${key.host}/${key.repository}`) === azureKey;
-      }
-      const parsed = parseChangeRequestUrl(link.url);
-      if (parsed?.authority !== undefined) {
-        try {
-          const remote = new URL(identity.locator.remoteUrl);
-          if (remote.protocol === "http:" || remote.protocol === "https:") {
-            return (
-              parsed.authority === remote.host && parsed.repository === repository.toLowerCase()
-            );
-          }
-        } catch {}
-        return parsed.host === host && parsed.repository === repository.toLowerCase();
-      }
-      return (
-        link.host.toLowerCase() === host.toLowerCase() &&
-        link.repository.toLowerCase() === repository.toLowerCase()
-      );
-    }),
-  );
-  if (link === null) return null;
-  return {
-    projectId,
-    repository: azureKey === null ? link.repository : repository,
-    number: link.number,
-    url: link.url,
-  };
-}
-
 export interface ThreadPullRequestChain {
   readonly kind: "native" | "derived";
   readonly layers: ReadonlyArray<ThreadPullRequestLink>;
@@ -230,8 +180,26 @@ export function resolveThreadPullRequestChains(
     nativeStacks.set(stackKey, members);
   }
   for (const members of nativeStacks.values()) {
-    const order = new Map(members[0]!.stack!.layers.map((layer, index) => [layer.number, index]));
-    members.sort((left, right) => (order.get(left.number) ?? 0) - (order.get(right.number) ?? 0));
+    // Saved snapshots can lag behind newer members of the same stack.
+    const memberNumbers = new Set(members.map((member) => member.number));
+    let layers = members[0]!.stack!.layers;
+    let coverage = layers.filter((layer) => memberNumbers.has(layer.number)).length;
+    for (const member of members.slice(1)) {
+      const candidate = member.stack!.layers;
+      const candidateCoverage = candidate.filter((layer) => memberNumbers.has(layer.number)).length;
+      if (
+        candidateCoverage > coverage ||
+        (candidateCoverage === coverage && candidate.length > layers.length)
+      ) {
+        layers = candidate;
+        coverage = candidateCoverage;
+      }
+    }
+    const order = new Map(layers.map((layer, index) => [layer.number, index]));
+    members.sort(
+      (left, right) =>
+        (order.get(left.number) ?? layers.length) - (order.get(right.number) ?? layers.length),
+    );
     for (const member of members) placed.add(threadPullRequestKeyOf(member));
     chains.push({ kind: "native", layers: members, depths: members.map((_, index) => index) });
   }

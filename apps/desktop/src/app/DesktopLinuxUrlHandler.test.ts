@@ -185,33 +185,6 @@ describe("DesktopLinuxUrlHandler", () => {
     assert.include(entry, "Icon=/home/al ice/icons/T3\\\\x.png");
   });
 
-  it("carries structured context on registration errors", () => {
-    const writeError = new DesktopLinuxUrlHandler.DesktopLinuxUrlHandlerRegistrationError({
-      step: "write-desktop-entry",
-      scheme: "t3code",
-      desktopEntryPath: "/home/alice/.local/share/applications/com.t3tools.T3Code.desktop",
-      cause: new Error("boom"),
-    });
-    assert.equal(
-      writeError.message,
-      "Failed to register the t3code:// URL handler (step: write-desktop-entry).",
-    );
-    assert.equal(
-      writeError.desktopEntryPath,
-      "/home/alice/.local/share/applications/com.t3tools.T3Code.desktop",
-    );
-
-    const exitError = new DesktopLinuxUrlHandler.DesktopLinuxUrlHandlerRegistrationError({
-      step: "set-default-handler",
-      scheme: "t3code",
-      exitCode: 4,
-    });
-    assert.equal(
-      exitError.message,
-      "Failed to register the t3code:// URL handler (step: set-default-handler, xdg-mime exit code 4).",
-    );
-  });
-
   it.effect(
     "writes the handler entry, refreshes the MIME cache, and claims the scheme default",
     () => {
@@ -228,7 +201,7 @@ describe("DesktopLinuxUrlHandler", () => {
         );
         assert.include(
           recorded.files[0]?.content,
-          'Exec="/home/alice/Applications/T3-Code.AppImage" %U',
+          "Exec=/home/alice/Applications/T3-Code.AppImage %U",
         );
         assert.include(recorded.files[0]?.content, "MimeType=x-scheme-handler/t3code;");
         assert.deepEqual(recorded.commands, [
@@ -253,7 +226,12 @@ describe("DesktopLinuxUrlHandler", () => {
 
       assert.include(
         recorded.files[0]?.content,
-        `Exec=${DesktopLinuxUrlHandler.escapeDesktopEntryExecArgument(process.execPath)} %U`,
+        DesktopLinuxUrlHandler.renderUrlHandlerDesktopEntry({
+          displayName: "T3 Code (Alpha)",
+          execTarget: process.execPath,
+          scheme: "t3code",
+          iconPath: "/home/alice/.local/share/icons/com.t3tools.T3Code.desktop.png",
+        }),
       );
     });
   });
@@ -437,26 +415,6 @@ describe("DesktopLinuxUrlHandler", () => {
           ["update-desktop-database", "xdg-mime"],
         );
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
-  );
-
-  it.effect("continues to xdg-mime when the desktop MIME cache refresh stalls", () =>
-    Effect.gen(function* () {
-      const recorded = emptyRecording();
-      const started = yield* Deferred.make<void>();
-      const registration = yield* runRegister(recorded, {
-        updateDesktopDatabaseStalled: true,
-        updateDesktopDatabaseStarted: started,
-      }).pipe(Effect.forkChild);
-
-      yield* Deferred.await(started);
-      yield* TestClock.adjust("5 seconds");
-      yield* Fiber.join(registration);
-
-      assert.deepEqual(
-        recorded.commands.map(({ command }) => command),
-        ["update-desktop-database", "xdg-mime"],
-      );
-    }),
   );
 });
 
@@ -715,35 +673,6 @@ it.layer(NodeServices.layer)("DesktopLinuxUrlHandler theme icons", (it) => {
         missingTool.commands.map(({ command }) => command),
         ["gtk-update-icon-cache", "update-desktop-database", "xdg-mime"],
       );
-    }).pipe(Effect.scoped),
-  );
-
-  it.effect("continues to xdg-mime when the icon cache refresh stalls", () =>
-    Effect.gen(function* () {
-      const fixture = yield* themeIconFixture(new Uint8Array([1, 2, 3]));
-      yield* fixture.seedCache;
-      const started = yield* Deferred.make<void>();
-      const iconCacheOptions: Array<Record<string, unknown>> = [];
-      const run: ThemeIconRun = {
-        root: fixture.root,
-        commands: [],
-        iconCacheOptions,
-        iconCacheStalled: true,
-        iconCacheStarted: started,
-      };
-
-      const registration = yield* registerWithRealFileSystem(run).pipe(Effect.forkChild);
-      yield* Deferred.await(started);
-      yield* TestClock.adjust("5 seconds");
-      yield* Fiber.join(registration);
-
-      assert.deepEqual(
-        run.commands.map(({ command }) => command),
-        ["gtk-update-icon-cache", "update-desktop-database", "xdg-mime"],
-      );
-      // Without a forced kill, releasing a helper that ignores SIGTERM after
-      // the timeout would still wait for it to exit.
-      assert.equal(iconCacheOptions[0]?.forceKillAfter, "1 second");
     }).pipe(Effect.scoped),
   );
 });

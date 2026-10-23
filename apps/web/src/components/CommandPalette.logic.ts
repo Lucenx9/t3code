@@ -1,9 +1,19 @@
 import { threadPullRequestSearchTerms } from "@t3tools/shared/threadPullRequests";
 import type { CommandPaletteLinkedThreads } from "../commandPaletteBus";
 import {
+  addProjectRemoteSourceLabel,
+  addProjectRemoteSourcePathHint,
+  buildAddProjectRemoteSourceReadiness,
+  type AddProjectRemoteSource,
+  type AddProjectRemoteSourceReadiness,
+} from "@t3tools/client-runtime/operations/projects";
+import {
   type EnvironmentId,
+  type EnvironmentMachineKind,
   type FilesystemBrowseEntry,
   type KeybindingCommand,
+  type SourceControlDiscoveryResult,
+  type SourceControlRepositoryInfo,
   THREAD_JUMP_KEYBINDING_COMMANDS,
 } from "@t3tools/contracts";
 import { filterFilesystemBrowseEntries } from "@t3tools/client-runtime/state/filesystem";
@@ -15,6 +25,7 @@ import { getThreadSortTimestamp, sortThreads } from "../lib/threadSort";
 import { normalizeSearchText } from "../lib/utils";
 import { formatRelativeTimeLabel } from "../timestampFormat";
 import { type Project, type SidebarThreadSummary, type Thread } from "../types";
+import { isSidebarSubagentThread } from "./Sidebar.logic";
 
 export const RECENT_THREAD_LIMIT = 12;
 export const ITEM_ICON_CLASS = "size-4 text-icon-muted";
@@ -65,6 +76,8 @@ export interface CommandPaletteUiState {
   readonly open: boolean;
   readonly mode: SearchOverlayMode;
   readonly openIntent: CommandPaletteOpenIntent | null;
+  readonly parentSearch?: CommandPaletteReturnContext;
+  readonly restoredSearch?: CommandPaletteReturnContext;
 }
 
 export type CommandPaletteUiAction =
@@ -78,7 +91,13 @@ export type CommandPaletteUiAction =
   | { readonly _tag: "OpenAddProject" }
   | { readonly _tag: "OpenNewThreadIn" }
   | { readonly _tag: "OpenChangeTheme" }
-  | { readonly _tag: "ClearOpenIntent" };
+  | { readonly _tag: "ClearOpenIntent" }
+  | {
+      readonly _tag: "OpenChildSearch";
+      readonly mode: "files" | "content";
+      readonly context: CommandPaletteReturnContext;
+    }
+  | { readonly _tag: "BackToCommand" };
 
 export function reduceCommandPaletteUiState(
   state: CommandPaletteUiState,
@@ -88,11 +107,22 @@ export function reduceCommandPaletteUiState(
     case "SetOpen":
       return action.open
         ? { open: true, mode: "command", openIntent: state.openIntent }
-        : { ...state, open: false, openIntent: null };
+        : { open: false, mode: state.mode, openIntent: null };
     case "ToggleMode":
       return state.open && state.mode === action.mode
-        ? { ...state, open: false, openIntent: null }
+        ? { open: false, mode: state.mode, openIntent: null }
         : { open: true, mode: action.mode, openIntent: null };
+    case "OpenChildSearch":
+      return { open: true, mode: action.mode, openIntent: null, parentSearch: action.context };
+    case "BackToCommand":
+      return state.open && state.mode !== "command"
+        ? {
+            open: true,
+            mode: "command",
+            openIntent: null,
+            ...(state.parentSearch ? { restoredSearch: state.parentSearch } : {}),
+          }
+        : state;
     case "OpenSearch":
       return {
         open: true,
@@ -160,6 +190,49 @@ export interface CommandPaletteView {
   readonly addonIcon: ReactNode;
   readonly groups: ReadonlyArray<CommandPaletteGroup>;
   readonly initialQuery?: string;
+}
+
+// Child search unmounts the palette; retain search data without its view closures.
+export interface CommandPaletteReturnContext {
+  readonly query: string;
+  readonly linkedThreadSearch: Extract<CommandPaletteOpenIntent, { kind: "search" }> | null;
+}
+
+export interface CommandPaletteSearchState {
+  readonly query: string;
+  readonly views: ReadonlyArray<{
+    readonly view: CommandPaletteView;
+    readonly parentQuery: string;
+  }>;
+}
+
+export function createCommandPaletteSearchState(query = ""): CommandPaletteSearchState {
+  return { query, views: [] };
+}
+
+export function reduceCommandPaletteSearchState(
+  state: CommandPaletteSearchState,
+  action:
+    | { readonly type: "query"; readonly query: string }
+    | { readonly type: "push"; readonly view: CommandPaletteView }
+    | { readonly type: "back" }
+    | { readonly type: "reset"; readonly query?: string },
+): CommandPaletteSearchState {
+  switch (action.type) {
+    case "query":
+      return { ...state, query: action.query };
+    case "push":
+      return {
+        query: action.view.initialQuery ?? "",
+        views: [...state.views, { view: action.view, parentQuery: state.query }],
+      };
+    case "back": {
+      const parent = state.views.at(-1);
+      return parent ? { query: parent.parentQuery, views: state.views.slice(0, -1) } : state;
+    }
+    case "reset":
+      return createCommandPaletteSearchState(action.query);
+  }
 }
 
 export type CommandPaletteRow =
@@ -281,6 +354,7 @@ export type BuildThreadActionItemsThread = Pick<
   | "createdAt"
   | "environmentId"
   | "id"
+  | "lineage"
   | "modelSelection"
   | "projectId"
   | "runtime"
@@ -306,7 +380,9 @@ export function buildThreadActionItems<TThread extends BuildThreadActionItemsThr
   limit?: number;
 }): CommandPaletteActionItem[] {
   const sortedThreads = sortThreads(
-    input.threads.filter((thread) => thread.archivedAt === null),
+    input.threads.filter(
+      (thread) => thread.archivedAt === null && !isSidebarSubagentThread(thread),
+    ),
     input.sortOrder,
   );
   const visibleThreads =
@@ -365,6 +441,16 @@ export function buildThreadActionItems<TThread extends BuildThreadActionItemsThr
   });
 }
 
+const ALPHANUMERIC = /[\p{L}\p{N}]/u;
+
+function startsWord(field: string, token: string): boolean {
+  for (let index = field.indexOf(token); index !== -1; index = field.indexOf(token, index + 1)) {
+    if (index === 0 || !ALPHANUMERIC.test(field[index - 1]!)) return true;
+  }
+  return false;
+}
+
+// 3 exact, 2 field prefix, 1 every token starts a word, 0 a token only matches mid-word.
 function rankSearchFieldMatch(
   field: string,
   normalizedQuery: string,
@@ -383,33 +469,30 @@ function rankSearchFieldMatch(
   if (normalizedField.startsWith(normalizedQuery)) {
     return 2;
   }
-  if (normalizedField.includes(normalizedQuery)) {
+  if (queryTokens.every((token) => startsWord(normalizedField, token))) {
     return 1;
   }
   return 0;
 }
 
+// A word-start match in any field beats a mid-word match, then earlier fields win.
+// Thread titles collapse prefix and word-start into one tier so recency picks between them.
 function rankCommandPaletteItemMatch(
   item: CommandPaletteActionItem | CommandPaletteSubmenuItem,
   normalizedQuery: string,
   queryTokens: ReadonlyArray<string>,
 ): number {
-  const terms = item.searchTerms.filter((term) => term.length > 0);
-  if (terms.length === 0) {
-    return 0;
-  }
-
-  for (const [index, field] of terms.entries()) {
+  let best = 0;
+  for (const [index, field] of item.searchTerms.filter((term) => term.length > 0).entries()) {
     const fieldRank = rankSearchFieldMatch(field, normalizedQuery, queryTokens);
-    if (fieldRank !== Number.NEGATIVE_INFINITY) {
-      if (index === 0 && item.searchRecency !== undefined) {
-        return 1_000 + Number(fieldRank === 3);
-      }
-      return 1_000 - index * 100 + fieldRank;
-    }
+    if (fieldRank === Number.NEGATIVE_INFINITY) continue;
+    const fieldScore =
+      index === 0 && item.searchRecency !== undefined
+        ? 1_000 + Number(fieldRank === 3)
+        : 1_000 - index * 100 + fieldRank;
+    best = Math.max(best, (fieldRank > 0 ? 10_000 : 0) + fieldScore);
   }
-
-  return 0;
+  return best;
 }
 
 export function filterCommandPaletteGroups(input: {
@@ -594,4 +677,88 @@ export function getCommandPaletteInputPlaceholder(mode: CommandPaletteMode): str
     case "submenu-browse":
       return "Enter path (e.g. ~/projects/my-app)";
   }
+}
+
+export function getEnvironmentBrowsePlatform(os: string | null | undefined): string {
+  if (os === "windows") {
+    return "Win32";
+  }
+  if (os === "darwin") {
+    return "MacIntel";
+  }
+  if (os === "linux") {
+    return "Linux";
+  }
+  return typeof navigator === "undefined" ? "" : navigator.platform;
+}
+
+export interface AddProjectEnvironmentOption {
+  readonly environmentId: EnvironmentId;
+  readonly label: string;
+  readonly machine: EnvironmentMachineKind;
+  readonly isPrimary: boolean;
+  readonly isConnected: boolean;
+  readonly status: string;
+}
+
+export type AddProjectCloneFlow =
+  | {
+      readonly step: "repository";
+      readonly environmentId: EnvironmentId;
+      readonly source: AddProjectRemoteSource;
+    }
+  | {
+      readonly step: "confirm";
+      readonly environmentId: EnvironmentId;
+      readonly source: AddProjectRemoteSource;
+      readonly repositoryInput: string;
+      readonly repository: SourceControlRepositoryInfo | null;
+      readonly remoteUrl: string;
+    };
+
+export function remoteProjectInputPlaceholder(flow: AddProjectCloneFlow | null): string | null {
+  if (!flow) return null;
+  if (flow.step === "confirm") return null;
+  if (flow.source === "url") {
+    return "Enter Git clone URL";
+  }
+  return `Enter ${addProjectRemoteSourceLabel(flow.source)} repository (${addProjectRemoteSourcePathHint(flow.source)})`;
+}
+
+export function buildPaletteRemoteSourceReadiness(
+  discovery: SourceControlDiscoveryResult | null,
+): AddProjectRemoteSourceReadiness {
+  const readiness = buildAddProjectRemoteSourceReadiness(discovery);
+  return (source) => {
+    const entry = readiness(source);
+    return entry.hint === null
+      ? entry
+      : {
+          ...entry,
+          hint: entry.hint.replace(
+            "Open Source Control settings",
+            "Open Settings -> Source Control",
+          ),
+        };
+  };
+}
+
+export function errorMessage(error: unknown): string {
+  if (error instanceof Error && error.message.trim().length > 0) {
+    return error.message;
+  }
+  return "An error occurred.";
+}
+
+const OVERLAY_MODE_BY_COMMAND = {
+  "commandPalette.toggle": "command",
+  "filePicker.toggle": "files",
+  "projectSearch.toggle": "content",
+} as const satisfies Partial<Record<string, SearchOverlayMode>>;
+
+export function overlayModeForCommand(command: string | null): SearchOverlayMode | null {
+  if (command === null) return null;
+  return command in OVERLAY_MODE_BY_COMMAND
+    ? OVERLAY_MODE_BY_COMMAND[command as keyof typeof OVERLAY_MODE_BY_COMMAND]
+    : null;
 }
