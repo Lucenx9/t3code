@@ -6,6 +6,8 @@ import { SourceControlProviderError, type ChangeRequest } from "@t3tools/contrac
 import { detectSourceControlProviderFromRemoteUrl } from "@t3tools/shared/sourceControl";
 
 import * as GitLabCli from "./GitLabCli.ts";
+import * as GitLabChangeRequestTemplate from "./gitLabChangeRequestTemplate.ts";
+import * as SourceControlHost from "@t3tools/source-control-core/server/SourceControlHost";
 import * as SourceControlProvider from "@t3tools/source-control-core/server/SourceControlProvider";
 import {
   combinedAuthOutput,
@@ -33,6 +35,7 @@ function toChangeRequest(summary: GitLabCli.GitLabMergeRequestSummary): ChangeRe
     url: summary.url,
     baseRefName: summary.baseRefName,
     headRefName: summary.headRefName,
+    ...(summary.headSha !== undefined ? { headSha: summary.headSha } : {}),
     state: summary.state ?? "open",
     ...(summary.isDraft === true ? { isDraft: true } : {}),
     closedAt: summary.closedAt ?? null,
@@ -161,6 +164,7 @@ export const discovery = {
 
 export const make = Effect.gen(function* () {
   const gitlab = yield* GitLabCli.GitLabCli;
+  const { git } = yield* SourceControlHost.SourceControlHost;
 
   const readLinkSubject = Effect.fn("GitLabSourceControlProvider.readLinkSubject")(function* (
     input: { readonly cwd: string; readonly url: URL },
@@ -202,6 +206,8 @@ export const make = Effect.gen(function* () {
 
   return SourceControlProvider.SourceControlProvider.of({
     kind: SourceControlProviderKind.make("gitlab"),
+    readChangeRequestTemplate: ({ cwd, treeish }) =>
+      GitLabChangeRequestTemplate.detect(cwd, treeish, git.execute),
     refineRepositoryIdentity,
     resolveLink: (input) => {
       // Automatic enrichment must not send ambient CLI credentials to a host from message text.

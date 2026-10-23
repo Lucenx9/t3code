@@ -144,6 +144,12 @@ export interface ProviderChangeRequestPage {
    * may need to count malformed raw rows it consumed too.
    */
   readonly cursorAdvance?: number;
+  /**
+   * Where a host that can only page from the top carries on: an opaque position past the last
+   * row delivered, handed back as the cursor's `resumeAfter`. Unlike a count of rows it survives
+   * rows above it closing between reads.
+   */
+  readonly resumeAfter?: string;
   readonly continues: boolean;
 }
 
@@ -160,6 +166,7 @@ export interface ProviderListCursor {
    * applying their limit so a full page of tied updates does not repeat the same prefix.
    */
   readonly seenAt?: ReadonlyArray<number> | undefined;
+  readonly resumeAfter?: string | undefined;
 }
 
 export interface ProviderBatchedChangeRequest extends ProviderChangeRequest {
@@ -226,6 +233,16 @@ export interface ProviderFilesViewed {
   readonly truncated: boolean;
 }
 
+export interface ProviderFileStats {
+  readonly files: ReadonlyArray<{
+    readonly path: string;
+    readonly additions: number;
+    readonly deletions: number;
+  }>;
+  /** The host has more files than were read. */
+  readonly truncated: boolean;
+}
+
 /**
  * Opaque strings, compared only against one another, where the empty string is the answer for a
  * file the change request deletes rather than a gap. A path is absent only where the read could
@@ -239,6 +256,11 @@ export interface ProviderFileRevisions {
    * the whole change again. False for a read cut short, which cannot speak past the cut.
    */
   readonly complete?: boolean;
+}
+
+export interface ProviderFilterOptionPage<A> {
+  readonly items: ReadonlyArray<A>;
+  readonly truncated: boolean;
 }
 
 export interface ProviderRepositoryRef {
@@ -332,7 +354,7 @@ export interface PullRequestProviderApi {
 
   readonly getChangeRequestChecks?: (
     input: ProviderRepositoryRef & { readonly number: number },
-  ) => Effect.Effect<PullRequestChecks, PullRequestProviderError>;
+  ) => Effect.Effect<Pick<PullRequestChecks, "state" | "checks">, PullRequestProviderError>;
 
   readonly getChangeRequest: (
     input: ProviderRepositoryRef & { readonly number: number },
@@ -407,6 +429,11 @@ export interface PullRequestProviderApi {
   readonly getFilesViewed?: (
     input: ProviderRepositoryRef & { readonly number: number },
   ) => Effect.Effect<ProviderFilesViewed, PullRequestProviderError>;
+
+  /** Line counts for every changed file. Optional: a host without one shows no breakdown. */
+  readonly getFileStats?: (
+    input: ProviderRepositoryRef & { readonly number: number },
+  ) => Effect.Effect<ProviderFileStats, PullRequestProviderError>;
 
   /**
    * A host with no bulk form is still owed one round trip for the batch rather than one per
@@ -506,6 +533,22 @@ export interface PullRequestProviderApi {
   readonly listLabelCandidates?: (
     input: ProviderRepositoryRef & { readonly number: number },
   ) => Effect.Effect<PullRequestLabelCandidateList, PullRequestProviderError>;
+
+  /**
+   * The labels a repository offers, for narrowing a listing by. `query` narrows by name as far as
+   * the host can; the caller still matches the answer against it.
+   */
+  readonly listRepositoryLabels?: (
+    input: ProviderRepositoryRef & { readonly query?: string | undefined },
+  ) => Effect.Effect<ProviderFilterOptionPage<PullRequestLabel>, PullRequestProviderError>;
+
+  /**
+   * People who could have opened a change request in the repository, for narrowing a listing by
+   * author. A host that can only search its whole user base answers from that.
+   */
+  readonly searchRepositoryAuthors?: (
+    input: ProviderRepositoryRef & { readonly query?: string | undefined },
+  ) => Effect.Effect<ProviderFilterOptionPage<PullRequestActor>, PullRequestProviderError>;
 
   readonly setLabels?: (
     input: ProviderRepositoryRef & {
