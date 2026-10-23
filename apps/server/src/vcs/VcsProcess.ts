@@ -9,6 +9,7 @@ import { ChildProcessSpawner } from "effect/process";
 
 import {
   type VcsError,
+  type VcsProcessErrorContext,
   VcsProcessExitError,
   type VcsProcessExitFailureKind,
   VcsProcessMissingExitCodeError,
@@ -20,6 +21,7 @@ import {
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 
+import { gitCommandDuration, gitCommandsTotal, withMetrics } from "../observability/Metrics.ts";
 import * as ProcessRunner from "../processRunner.ts";
 
 export interface VcsProcessInput {
@@ -61,7 +63,32 @@ const OUTPUT_TRUNCATED_MARKER = "\n\n[truncated]";
 const VCS_PROCESS_CONCURRENCY = 8;
 const GITHUB_PROCESS_CONCURRENCY = 4;
 
+/** Shown to users when a Git command fails because another process holds the index lock. */
+export const GIT_INDEX_LOCKED_DETAIL =
+  "Git's index is locked. Wait for other Git operations to finish, then try again.";
+
 export const CHECKPOINT_CAPTURE_OPERATION = "GitVcsDriver.checkpoints.captureCheckpoint";
+
+// Caller operations are diagnostic strings; only known labels may become metric attributes.
+const gitMetricOperations = new Set([
+  CHECKPOINT_CAPTURE_OPERATION,
+  "GitVcsDriver.checkpoints.deleteCheckpointRefs",
+  "GitVcsDriver.checkpoints.diffCheckpoints",
+  "GitVcsDriver.checkpoints.hasHeadCommit",
+  "GitVcsDriver.checkpoints.listAuthoredPaths",
+  "GitVcsDriver.checkpoints.resolveCheckpointCommit",
+  "GitVcsDriver.checkpoints.resolveGitCommonDir",
+  "GitVcsDriver.checkpoints.resolveHeadCommit",
+  "GitVcsDriver.checkpoints.restoreCheckpoint",
+  "GitVcsDriver.detectRepository.commonDir",
+  "GitVcsDriver.detectRepository.root",
+  "GitVcsDriver.filterIgnoredPaths",
+  "GitVcsDriver.initRepository",
+  "GitVcsDriver.isInsideWorkTree",
+  "GitVcsDriver.listRemotes",
+  "GitVcsDriver.listWorkspaceFiles",
+  "GitVcsDriver.resolveGitCommonDir",
+]);
 
 /**
  * Appends `key=value` to the `GIT_CONFIG_*` entries git reads as command-line
@@ -162,21 +189,29 @@ const isTransientGitExit = (stderr: string) =>
   /unable to create [^\n]*\.lock['"]?: file exists/i.test(stderr) ||
   /(?:unable to stat|lstat\(|error: open\()[^\n]+: no such file or directory/i.test(stderr);
 
+// On macOS, Git's fsync uses F_FULLFSYNC; writeout-only still uses fsync(2).
+// Network mounts can reject F_FULLFSYNC. Ref writes omit errno, so retry their
+// bare write error too; explicit unrelated errors remain failures.
+// Linux writeout-only only starts writeback, so it must not use this fallback.
+const FULL_FSYNC_ARG = "core.fsyncMethod=fsync";
+const BATCH_FSYNC_ARG = "core.fsyncMethod=batch";
+const WRITEOUT_ONLY_FSYNC_ARG = "core.fsyncMethod=writeout-only";
+const canRetryFullFsync = (stderr: string) =>
+  /fsync error on [^\r\n]+: operation not supported\r?$/im.test(stderr) ||
+  /cannot update ref [^\r\n]+: couldn't write '[^\r\n]+\.lock'\r?$/im.test(stderr);
+
 export const make = Effect.gen(function* () {
   const processRunner = yield* ProcessRunner.ProcessRunner;
   const hostPlatform = yield* HostProcess.Platform;
   const vcsProcesses = yield* Semaphore.make(VCS_PROCESS_CONCURRENCY);
   const githubProcesses = yield* Semaphore.make(GITHUB_PROCESS_CONCURRENCY);
 
-  const runUnbounded = Effect.fn("VcsProcess.runUnbounded")(function* (input: VcsProcessInput) {
-    const baseError = {
-      operation: input.operation,
-      command: input.command,
-      cwd: input.cwd,
-      argumentCount: input.args.length,
-    };
-
-    const result = yield* processRunner
+  const spawn = Effect.fn("VcsProcess.spawn")(function* (
+    input: VcsProcessInput,
+    baseError: VcsProcessErrorContext,
+  ) {
+    let failedExit = false;
+    const execution = processRunner
       .run({
         command: input.command,
         args: input.args,
@@ -195,6 +230,10 @@ export const make = Effect.gen(function* () {
         timeoutBehavior: "error",
       })
       .pipe(
+        Effect.tap((result) => {
+          failedExit = result.code === null || (!input.allowNonZeroExit && result.code !== 0);
+          return Effect.void;
+        }),
         Effect.mapError(
           Match.valueTags({
             ProcessSpawnError: (error) =>
@@ -224,13 +263,60 @@ export const make = Effect.gen(function* () {
         ),
       );
 
+    return yield* input.command === "git"
+      ? execution.pipe(
+          withMetrics({
+            counter: gitCommandsTotal,
+            timer: gitCommandDuration,
+            attributes: {
+              operation: gitMetricOperations.has(input.operation) ? input.operation : "other",
+            },
+            outcomeAttributes: (outcome) => ({
+              outcome: outcome === "success" && failedExit ? "failure" : outcome,
+            }),
+          }),
+        )
+      : execution;
+  });
+
+  const runUnbounded = Effect.fn("VcsProcess.runUnbounded")(function* (input: VcsProcessInput) {
+    const baseError = {
+      operation: input.operation,
+      command: input.command,
+      cwd: input.cwd,
+      argumentCount: input.args.length,
+    };
+
+    let result = yield* spawn(input, baseError);
+
+    if (
+      hostPlatform === "darwin" &&
+      input.operation === CHECKPOINT_CAPTURE_OPERATION &&
+      !input.allowNonZeroExit &&
+      result.code !== null &&
+      result.code !== 0 &&
+      input.command === "git" &&
+      (input.args.includes(FULL_FSYNC_ARG) || input.args.includes(BATCH_FSYNC_ARG)) &&
+      canRetryFullFsync(result.stderr)
+    ) {
+      result = yield* spawn(
+        {
+          ...input,
+          args: input.args.map((arg) =>
+            arg === FULL_FSYNC_ARG || arg === BATCH_FSYNC_ARG ? WRITEOUT_ONLY_FSYNC_ARG : arg,
+          ),
+        },
+        baseError,
+      );
+    }
+
     if (result.code === null) {
       return yield* new VcsProcessMissingExitCodeError(baseError);
     }
 
     if (!input.allowNonZeroExit && result.code !== 0) {
       const failureKind = classifyNonZeroExit(input.command, result.stderr);
-      return yield* VcsProcessExitError.fromProcessExit(
+      const error = VcsProcessExitError.fromProcessExit(
         baseError,
         {
           exitCode: result.code,
@@ -242,6 +328,18 @@ export const make = Effect.gen(function* () {
           failureKind === "command-failed" &&
           isTransientGitExit(result.stderr),
       );
+      if (
+        input.command === "git" &&
+        /^fatal: unable to create ['"][^\r\n]*[/\\]index\.lock['"]: file exists\.?$/im.test(
+          result.stderr,
+        )
+      ) {
+        return yield* new VcsProcessExitError({
+          ...error,
+          detail: GIT_INDEX_LOCKED_DETAIL,
+        });
+      }
+      return yield* error;
     }
 
     return {
