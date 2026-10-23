@@ -481,6 +481,11 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
         threadId: input.threadId,
         env: launch.env,
       });
+      // Finalizers run in reverse order: reap detached work after terminating Pi.
+      const scopeUnit = scopedLaunch.unit;
+      const stopScope =
+        scopeUnit === undefined ? Effect.void : yield* Effect.cached(agentScope.stop(scopeUnit));
+      yield* Effect.addFinalizer(() => stopScope);
       const connection: PiRpcConnection = yield* makePiRpcConnection({
         command: scopedLaunch.command,
         args: scopedLaunch.args,
@@ -497,6 +502,13 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
             }),
         ),
       );
+      // Detached children can keep stdout open after Pi exits.
+      if (scopeUnit !== undefined) {
+        yield* connection.exited.pipe(
+          Effect.matchEffect({ onFailure: () => stopScope, onSuccess: () => stopScope }),
+          Effect.forkIn(scope),
+        );
+      }
       const now = yield* DateTime.now;
       let sessionEntity: OrchestrationV2ProviderSession = {
         id: input.providerSessionId,
@@ -3234,8 +3246,9 @@ function piForkEntry<E>(
 
 /**
  * Pi shares the server clock. An adopted wake can precede its T3 turn, so search from the target
- * turn's end through the boundary turn's end. At thread start, use the earlier of thread creation
- * and turn start to include adopted wakes while preserving inherited session history.
+ * turn's end through the boundary turn's end. A boundary turn still running has no end yet, so
+ * the window stays open through the tree read. At thread start, use the earlier of thread
+ * creation and turn start to include adopted wakes while preserving inherited session history.
  */
 function piUncapturedForkEntry(
   listing: PiSessionListing,
@@ -3243,12 +3256,12 @@ function piUncapturedForkEntry(
   providerThreadCreatedAt: DateTime.Utc,
 ): string | undefined {
   const { startedAt, completedAt } = boundary.turn;
-  if (startedAt === null || completedAt === null) return undefined;
+  if (startedAt === null) return undefined;
   const from =
     boundary.target === null
       ? Math.min(DateTime.toEpochMillis(providerThreadCreatedAt), DateTime.toEpochMillis(startedAt))
       : DateTime.toEpochMillis(boundary.target.completedAt ?? startedAt);
-  const to = DateTime.toEpochMillis(completedAt);
+  const to = completedAt === null ? Infinity : DateTime.toEpochMillis(completedAt);
   const targetRef = boundary.target?.nativeTurnRef;
   const stopAt = targetRef?.strength === "strong" ? targetRef.nativeId : null;
   if (stopAt !== null && !listing.entries.has(stopAt)) return undefined;
@@ -3321,7 +3334,11 @@ function piQuestion(
               value: "",
             },
           ];
-  const question = recordString(event, "message") ?? recordString(event, "placeholder") ?? title;
+  // Extensions may send a blank placeholder, which is not a valid question.
+  const question =
+    [recordString(event, "message"), recordString(event, "placeholder")].find(
+      (text) => text !== undefined && text.trim().length > 0,
+    ) ?? title;
   return {
     id: questionId,
     header: title,
