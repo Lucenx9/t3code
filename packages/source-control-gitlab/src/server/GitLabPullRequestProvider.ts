@@ -73,7 +73,7 @@ export function gitLabViewerPermissions(input: {
   };
 }
 
-export function gitLabProviderFailure(
+function gitLabProviderFailure(
   error: GitLabPullRequestCli.GitLabPullRequestCliError,
 ): PullRequestProviderFailure {
   if (error._tag === "GitLabCliUnavailableError") return { reason: "missing-tool" };
@@ -95,6 +95,23 @@ export const make = Effect.gen(function* () {
       cause: error,
     });
 
+  // Optional endpoints may lose part of the activity, but an unusable CLI or account must
+  // reach the caller so it can report authentication failures and pause a throttled host.
+  const recoverRead = <A>(
+    read: Effect.Effect<A, GitLabPullRequestCli.GitLabPullRequestCliError>,
+    fallback: A,
+  ) =>
+    read.pipe(
+      Effect.catch((error) => {
+        const { reason } = gitLabProviderFailure(error);
+        return reason === "rate-limited" ||
+          reason === "unauthenticated" ||
+          reason === "missing-tool"
+          ? Effect.fail(error)
+          : Effect.succeed(fallback);
+      }),
+    );
+
   const provider: PullRequestProviderApi = {
     kind: SourceControlProviderKind.make("gitlab"),
     capabilities: CAPABILITIES,
@@ -113,6 +130,7 @@ export const make = Effect.gen(function* () {
           limit: input.limit,
           query: input.query,
           cursor: input.cursor,
+          filters: input.filters,
         })
         .pipe(
           Effect.mapError(fail("listChangeRequests")),
@@ -155,19 +173,13 @@ export const make = Effect.gen(function* () {
     getChangeRequestActivity: (input) =>
       Effect.all(
         [
-          cli
-            .listNotes(input)
-            .pipe(Effect.orElseSucceed(() => ({ comments: [], truncated: true }))),
-          cli.listCommits(input).pipe(Effect.orElseSucceed(() => [])),
-          cli
-            .listDiscussions(input)
-            .pipe(Effect.orElseSucceed(() => ({ threads: [], truncated: true }))),
-          cli.listReactions(input).pipe(
-            Effect.orElseSucceed(() => ({
-              reactions: [] as ReadonlyArray<PullRequestReaction>,
-              reactionsByNoteId: new Map<string, ReadonlyArray<PullRequestReaction>>(),
-            })),
-          ),
+          recoverRead(cli.listNotes(input), { comments: [], truncated: true }),
+          recoverRead(cli.listCommits(input), []),
+          recoverRead(cli.listDiscussions(input), { threads: [], truncated: true }),
+          recoverRead(cli.listReactions(input), {
+            reactions: [] as ReadonlyArray<PullRequestReaction>,
+            reactionsByNoteId: new Map<string, ReadonlyArray<PullRequestReaction>>(),
+          }),
         ],
         { concurrency: 4 },
       ).pipe(
@@ -219,6 +231,16 @@ export const make = Effect.gen(function* () {
           number: input.number,
         })
         .pipe(Effect.mapError(fail("listReviewerCandidates"))),
+
+    listRepositoryLabels: (input) =>
+      cli
+        .listProjectLabels({ cwd: input.cwd, repository: input.repository, search: input.query })
+        .pipe(Effect.mapError(fail("listRepositoryLabels"))),
+
+    searchRepositoryAuthors: (input) =>
+      cli
+        .listProjectUsers({ cwd: input.cwd, repository: input.repository, search: input.query })
+        .pipe(Effect.mapError(fail("searchRepositoryAuthors"))),
 
     setReviewerRequest: (input) =>
       cli

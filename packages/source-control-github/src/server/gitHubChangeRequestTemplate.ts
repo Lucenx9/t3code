@@ -98,13 +98,13 @@ type DirectoryTemplateResult =
   | { readonly _tag: "Ambiguous" }
   | { readonly _tag: "Template"; readonly template: string };
 
-function readTemplateDirectory(input: {
-  readonly cwd: string;
-  readonly executeGit: ExecuteGit;
-  readonly entries: ReadonlyArray<TemplateTreeEntry>;
-  readonly directory: string;
-}): Effect.Effect<DirectoryTemplateResult, GitCommandError> {
-  return Effect.gen(function* () {
+const readTemplateDirectory = Effect.fn("gitHubChangeRequestTemplate.readTemplateDirectory")(
+  function* (input: {
+    readonly cwd: string;
+    readonly executeGit: ExecuteGit;
+    readonly entries: ReadonlyArray<TemplateTreeEntry>;
+    readonly directory: string;
+  }): Effect.fn.Return<DirectoryTemplateResult, GitCommandError> {
     const prefix = `${input.directory}/`;
     const candidates = input.entries.filter((entry) => {
       if (!entry.path.startsWith(prefix)) {
@@ -128,8 +128,8 @@ function readTemplateDirectory(input: {
     return templates[0]
       ? ({ _tag: "Template", template: templates[0] } as const)
       : ({ _tag: "None" } as const);
-  });
-}
+  },
+);
 
 export const detect = Effect.fn("gitHubChangeRequestTemplate.detect")(function* (
   cwd: string,
@@ -155,25 +155,56 @@ export const detect = Effect.fn("gitHubChangeRequestTemplate.detect")(function* 
       );
       let result = yield* listTemplates([location || "."]);
       if (result.stdoutTruncated) {
-        result = yield* listTemplates(templatePaths);
+        // grep supports case-insensitive literal pathspecs; ls-tree does not. It returns only
+        // matching filenames, keeping unrelated entries out of the fallback's output budget.
+        const paths = yield* executeGit({
+          operation: "gitHubChangeRequestTemplate.findTemplatePaths",
+          cwd,
+          args: [
+            "grep",
+            "-l",
+            "-z",
+            "--full-name",
+            "--no-recurse-submodules",
+            "-e",
+            "^",
+            treeish,
+            "--",
+            ...templatePaths.map((path) => `:(top,icase,literal)${path}`),
+          ],
+          maxOutputBytes: TREE_LIST_MAX_BYTES,
+        }).pipe(
+          Effect.map((output) =>
+            output.stdoutTruncated
+              ? []
+              : output.stdout
+                  .split("\0")
+                  .filter((path) => path.startsWith(`${treeish}:`))
+                  .map((path) => path.slice(treeish.length + 1)),
+          ),
+          // No matching nonempty files makes git grep exit with status 1.
+          Effect.orElseSucceed(() => []),
+        );
+        result = yield* listTemplates([...new Set([...templatePaths, ...paths])]);
       }
       if (result.stdoutTruncated) {
         return Option.none();
       }
 
       const entries = parseTemplateTreeEntries(result.stdout);
-      for (const templatePath of templatePaths) {
-        const candidates = entries
-          .filter((entry) => entry.path.toLowerCase() === templatePath.toLowerCase())
-          .toSorted(
-            (left, right) =>
-              Number(right.path === templatePath) - Number(left.path === templatePath),
-          );
-        for (const entry of candidates) {
-          const template = yield* readTemplateBlob({ cwd, executeGit, entry });
-          if (Option.isSome(template)) {
-            return template;
-          }
+      const templateNames = new Set(templatePaths.map((path) => path.toLowerCase()));
+      const candidates = [
+        ...templatePaths.flatMap((path) => entries.filter((entry) => entry.path === path)),
+        ...entries.filter(
+          (entry) =>
+            !templatePaths.some((path) => path === entry.path) &&
+            templateNames.has(entry.path.toLowerCase()),
+        ),
+      ];
+      for (const entry of candidates) {
+        const template = yield* readTemplateBlob({ cwd, executeGit, entry });
+        if (Option.isSome(template)) {
+          return template;
         }
       }
     }
