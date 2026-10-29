@@ -1,10 +1,13 @@
 import { assert, describe, it } from "@effect/vitest";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
-import { ChildProcessSpawner } from "effect/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 
 import {
@@ -245,4 +248,46 @@ describe("tailscale", () => {
       assert.deepEqual(killGraces, [500, 500]);
     });
   });
+
+  it.live("cancels Serve even when the CLI ignores SIGTERM", () =>
+    Effect.gen(function* () {
+      const nativeSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const started = yield* Deferred.make<{
+        readonly child: ChildProcessSpawner.ChildProcessHandle;
+        readonly ready: string;
+      }>();
+      const spawner = ChildProcessSpawner.make((command) =>
+        Effect.gen(function* () {
+          if (!ChildProcess.isStandardCommand(command)) return yield* nativeSpawner.spawn(command);
+          // Code 91 marks fixture self-release so a failed cancellation cannot leave a child behind.
+          const child = yield* nativeSpawner.spawn(
+            ChildProcess.make(
+              process.execPath,
+              [
+                "-e",
+                'process.on("SIGTERM", () => {}); setTimeout(() => process.exit(91), 5000); process.stdout.write("ready");',
+              ],
+              command.options,
+            ),
+          );
+          const ready = yield* Stream.runHead(child.stdout);
+          yield* Deferred.succeed(started, {
+            child,
+            ready: ready._tag === "Some" ? new TextDecoder().decode(ready.value) : "",
+          });
+          return child;
+        }),
+      );
+      const fiber = yield* ensureTailscaleServe({ localPort: 3773 }).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        Effect.forkChild,
+      );
+      const { child, ready } = yield* Deferred.await(started);
+      assert.equal(ready, "ready");
+      yield* Fiber.interrupt(fiber);
+      const result = yield* Effect.result(child.exitCode);
+      if (result._tag === "Success") assert.notEqual(result.success, 91);
+      else assert.include(String(result.failure.reason.cause), "SIGKILL");
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
 });

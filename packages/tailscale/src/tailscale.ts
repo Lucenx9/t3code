@@ -16,7 +16,7 @@ export const DEFAULT_TAILSCALE_SERVE_PORT = 443;
  */
 const TAILSCALE_STATUS_TIMEOUT = Duration.millis(3_500);
 /**
- * How long a probe killed on timeout gets to exit after SIGTERM before its
+ * How long a command killed on timeout gets to exit after SIGTERM before its
  * process group is SIGKILLed. Without it the spawner never escalates, so a group
  * member that ignores SIGTERM outlives the call. Short because the timeout error
  * only surfaces once cleanup finishes, and a healthy `tailscale` exits at once.
@@ -388,8 +388,11 @@ const runTailscaleCommand = Effect.fn("tailscale.runTailscaleCommand")(function*
     argumentCount: args.length,
   };
   const timeout = Duration.fromInputUnsafe(timeoutInput);
+  const command = ChildProcess.make(executable, args, {
+    forceKillAfter: TAILSCALE_KILL_GRACE,
+  });
   return yield* Effect.gen(function* () {
-    const child = yield* spawner.spawn(ChildProcess.make(executable, args)).pipe(
+    const child = yield* spawner.spawn(command).pipe(
       Effect.mapError((cause) => new TailscaleCommandSpawnError({ ...commandContext, cause })),
       Effect.catchDefect((cause) =>
         Effect.fail(new TailscaleCommandSpawnError({ ...commandContext, cause })),
