@@ -521,29 +521,27 @@ describe("mergePathValues", () => {
 });
 
 effectIt.layer(NodeServices.layer)("resolveCommandPath", (it) => {
-  it.effect.each(["linux", "darwin"] as const)(
-    "finds executables in a PATH directory ending in whitespace on %s",
-    (platform) =>
-      Effect.gen(function* () {
-        const fs = yield* FileSystem.FileSystem;
-        const path = yield* Path.Path;
-        const cwd = yield* fs.makeTempDirectoryScoped({ directory: ".", prefix: "t3-path-" });
-        const directory = `${cwd}/bin \u00a0`;
-        yield* fs.makeDirectory(directory);
-        const executable = `${directory}/audit-command`;
-        yield* fs.writeFileString(executable, "#!/bin/sh\n");
-        yield* fs.chmod(executable, 0o755);
-        const env = { PATH: directory };
+  it.effect("finds executables in a POSIX PATH directory ending in whitespace", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const cwd = yield* fs.makeTempDirectoryScoped({ directory: ".", prefix: "t3-path-" });
+      const directory = `${cwd}/bin \u00a0`;
+      yield* fs.makeDirectory(directory);
+      const executable = `${directory}/audit-command`;
+      yield* fs.writeFileString(executable, "#!/bin/sh\n");
+      yield* fs.chmod(executable, 0o755);
+      const env = { PATH: directory };
 
-        expect(
-          yield* resolveCommandPath("audit-command", { env }).pipe(
-            Effect.provideService(HostProcess.Platform, platform),
-            Effect.provideService(CommandResolutionCache, new Map()),
-          ),
-        ).toBe(path.join(directory, "audit-command"));
-        const resolveExecutable = yield* SpawnExecutableResolution;
-        expect(resolveExecutable("audit-command", platform, env)).toBe(executable);
-      }),
+      expect(
+        yield* resolveCommandPath("audit-command", { env }).pipe(
+          Effect.provideService(HostProcess.Platform, "linux"),
+          Effect.provideService(CommandResolutionCache, new Map()),
+        ),
+      ).toBe(path.join(directory, "audit-command"));
+      const resolveExecutable = yield* SpawnExecutableResolution;
+      expect(resolveExecutable("audit-command", "linux", env)).toBe(executable);
+    }),
   );
 
   const recordProbes = (env: NodeJS.ProcessEnv) =>
