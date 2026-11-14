@@ -81,9 +81,10 @@ describe("ssh config", () => {
       const sshDir = path.join(homeDir, ".ssh");
       yield* fs.makeDirectory(path.join(sshDir, "config.d", "ignored"), { recursive: true });
       yield* fs.makeDirectory(path.join(sshDir, "explicit-directory"));
+      yield* fs.makeDirectory(path.join(sshDir, "single.d"));
       yield* fs.writeFileString(
         path.join(sshDir, "config"),
-        "Include config.d/*\nInclude config.d/.literal.conf\nInclude config.d/.enabled-*.conf\nInclude explicit-directory\nHost real\n  HostName real.example.com\n",
+        "Include config.d/*\nInclude config.d/.literal.conf\nInclude config.d/.enabled-*.conf\nInclude explicit-directory\nInclude single.d/team?one.conf\nHost real\n  HostName real.example.com\n",
       );
       for (const [index, separator] of ["\u2028", "\u2029"].entries()) {
         yield* fs.writeFileString(
@@ -91,6 +92,11 @@ describe("ssh config", () => {
           `Host unicode-${index}\n  HostName unicode-${index}.example.com\n`,
         );
       }
+      // OpenSSH's `?` matches one byte, so it never matches a multi-byte line separator.
+      yield* fs.writeFileString(
+        path.join(sshDir, "single.d", "team\u2028one.conf"),
+        "Host single-byte\n  HostName single-byte.example.com\n",
+      );
       yield* fs.writeFileString(
         path.join(sshDir, "config.d", "team.conf"),
         "Host team\n  HostName team.example.com\n",
