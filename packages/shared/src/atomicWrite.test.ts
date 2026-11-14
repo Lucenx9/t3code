@@ -60,35 +60,16 @@ it.layer(NodeServices.layer)("writeFileStringAtomically", (it) => {
     }),
   );
 
-  it.effect.each(
-    HostProcess.Platform.defaultValue() === "linux"
-      ? ["settings.json", `${"s".repeat(250)}.json`]
-      : ["settings.json"],
-  )("keeps a symlinked file linked and rewrites its destination %s", (fileName) =>
+  it.effect("keeps a symlinked file linked and rewrites its destination", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-atomic-write-" });
-      let destination = path.join(root, "dotfiles", fileName);
+      const destination = path.join(root, "dotfiles", "settings.json");
       const link = path.join(root, "home", "settings.json");
       yield* fs.makeDirectory(path.dirname(destination), { recursive: true });
       yield* fs.makeDirectory(path.dirname(link), { recursive: true });
-      // Temporary mounts can have a smaller filename limit than the requested ASCII name.
-      for (let length = fileName.length; length > 0; length--) {
-        destination = path.join(root, "dotfiles", fileName.slice(0, length));
-        const created = yield* fs.writeFileString(destination, "before").pipe(
-          Effect.as(true),
-          Effect.catchIf(
-            (error) =>
-              length > 1 &&
-              error.cause instanceof Error &&
-              "code" in error.cause &&
-              error.cause.code === "ENAMETOOLONG",
-            () => Effect.succeed(false),
-          ),
-        );
-        if (created) break;
-      }
+      yield* fs.writeFileString(destination, "before");
       yield* fs.symlink(destination, link);
 
       yield* writeFileStringAtomically({ filePath: link, contents: "after" });
@@ -96,6 +77,21 @@ it.layer(NodeServices.layer)("writeFileStringAtomically", (it) => {
       assert.strictEqual(yield* fs.readLink(link), destination);
       assert.strictEqual(yield* fs.readFileString(destination), "after");
     }),
+  );
+
+  it.effect.each(HostProcess.Platform.defaultValue() === "linux" ? [255] : [])(
+    "saves a file whose name is %i bytes long",
+    (length) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-atomic-write-" });
+        const filePath = path.join(root, `${"s".repeat(length - 5)}.json`);
+
+        yield* writeFileStringAtomically({ filePath, contents: "after" });
+
+        assert.strictEqual(yield* fs.readFileString(filePath), "after");
+      }),
   );
 
   it.effect("keeps a dangling symlink linked and creates its destination", () =>
